@@ -73,6 +73,10 @@ int main(void)
 		{ // this is the child process
 			close(sockfd); // child doesn.t need the listener
 			timer = time(NULL);
+
+                        char* str = ctime(&timer);
+		        printf("Sending str: %s\n", str);
+
 			if (send(new_fd, ctime(&timer), 30, 0) == -1)
 			perror("send");
 			close(new_fd);
