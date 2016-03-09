@@ -139,12 +139,12 @@ struct context s_ctx;
 
 void comp_handler(struct ib_cq* cq, void* cq_context)
 {
-
+    printk(KERN_WARNING "COMP HANDLER\n");
 }
 
 void cq_event_handler(struct ib_event* ib_e, void* v)
 {
-
+    printk(KERN_WARNING "CQ HANDLER\n");
 }
 
 void build_qp_attr(struct ib_qp_init_attr* qp_attr)
@@ -220,31 +220,39 @@ static void launch(void)
 
     CHECK(retval == 0, "rdma_resolve_addr return did not succeed");
     printk(KERN_WARNING "Resolved address\n");
-
     
     memset(&cm_params, 0, sizeof(cm_params)); 
 
     // ON addr resolved
     //s_ctx.ctx = rcma_id->verbs;     
     s_ctx.pd = ib_alloc_pd(rcma_id->device);
+    CHECK(s_ctx.pd != 0, "ib_alloc_pd did not succeed");
+    printk(KERN_WARNING "allocated pd\n");
     //s_ctx.comp_channel = ib_create_comp_channel(rcma_id->device);
     s_ctx.cq = ib_create_cq(rcma_id->device, comp_handler, cq_event_handler, NULL, 10, 0xFFFF);
+    CHECK(s_ctx.cq != 0, "ib_create_cq did not succeed");
+    printk(KERN_WARNING "created cq\n");
 
     retval = ib_req_notify_cq(s_ctx.cq, 0);
     CHECK(retval == 0, "ib_req_notify_cq did not succeed");
+    printk(KERN_WARNING "req notify success\n");
 
     build_qp_attr(&qp_attr);
+    printk(KERN_WARNING "build_qp_attr success\n");
 
     retval = rdma_create_qp(rcma_id, s_ctx.pd, &qp_attr);
     CHECK(retval == 0, "rdma_create_qp did not succeed");
+    printk(KERN_WARNING "rdma_create_qp success\n");
 
     rcma_id->context = conn = (void*)kmalloc(sizeof(struct connection), GFP_KERNEL);
+    printk(KERN_WARNING "kmalloc success\n");
    
     conn->id = rcma_id;
     conn->qp = rcma_id->qp;
     conn->num_completions = 0;
 
     register_memory(conn);
+    printk(KERN_WARNING "register_memory success\n");
     post_receives(conn); 
 
     retval = rdma_resolve_route(rcma_id, 500);
