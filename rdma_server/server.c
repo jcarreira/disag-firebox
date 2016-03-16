@@ -43,15 +43,26 @@ struct context {
    struct ibv_qp* qp;
    struct ibv_cq* send_cq;
    struct ibv_cq* recv_cq;
-   
-   unsigned int local_rkey;  // rkey to be sent to client
+   struct ibv_comp_channel *event_channel;
+
+   int active_mtu;   
+   uint32_t local_rkey;  // rkey to be sent to client
    union ibv_gid gid;
    int qpn;
+   int psn;
    int lid;
+
+   int rem_qpn;
+   int rem_psn;
+   int rem_lid;
+   unsigned long long int rem_vaddr;
+   uint32_t rem_rkey;
+
+   char* buffer;
    
 } s_ctx;
 
-void exchange_bootstrap_data(void* virtual_address, int rkey)
+void exchange_bootstrap_data(void* virtual_address, uint32_t rkey, int qpn, int psn, int lid)
 {
     puts("exchange_bootstrap_data starting");
     // The server needs to send the rkey
@@ -59,7 +70,9 @@ void exchange_bootstrap_data(void* virtual_address, int rkey)
     char data_to_send[1000];
     memset(data_to_send, 0, 1000);
 
-    sprintf(data_to_send, "%016Lx:%08x", (unsigned long long int)virtual_address, rkey);
+    sprintf(data_to_send, "%016Lx:%u:%x:%x:%x", (unsigned long long int)virtual_address, rkey, qpn, psn, lid);
+    printf("sending. vaddr: %lld rkey: %u qpn: %d psn:%d lid:%d\n",
+           (unsigned long long int)virtual_address, rkey, qpn, psn, lid);
 
     int retval = send(new_fd, data_to_send, strlen(data_to_send), 0);
     
@@ -72,35 +85,84 @@ void exchange_bootstrap_data(void* virtual_address, int rkey)
     CHECK(retval > 0);
     
     printf("received: %s\n", recv_buffer);
+
+    sscanf(recv_buffer, "%016Lx:%u:%x:%x:%x", &s_ctx.rem_vaddr, 
+           &s_ctx.rem_rkey, &s_ctx.rem_qpn, &s_ctx.rem_psn, &s_ctx.rem_lid);
+}
+
+int get_port_data()
+{
+    struct ibv_port_attr attr;
+    int retval = ibv_query_port(s_ctx.context,1,&attr);
+    CHECK(retval == 0);
+    CHECK_MSG(attr.active_mtu == 5, "!!!!!!!!Wrong device!!!!!!");
+
+    s_ctx.lid = attr.lid;
+    s_ctx.qpn = s_ctx.qp->qp_num;
+    s_ctx.psn = lrand48() & 0xffffff;
+    s_ctx.local_rkey = s_ctx.mr->rkey;
+    s_ctx.active_mtu = attr.active_mtu;
+
+    ibv_query_gid(s_ctx.context, 1, 0, &s_ctx.gid);
+
+    return 0;
 }
 
 void handshake()
 {
-// lid, out_Reads, qpn, psn, rkey, vaddr, srqn
-    struct ibv_port_attr attr;
-    int retval = ibv_query_port(s_ctx.context,1,&attr);
-    CHECK(retval == 0);
-
-    s_ctx.lid = attr.lid;
-    s_ctx.qpn = s_ctx.qp->qp_num;
-    //s_ctx.psn = lrand48() & 0xffffff;
-    s_ctx.local_rkey = s_ctx.mr->rkey;
-
-    char* buffer = (char*) malloc(1000);
-
-    ibv_query_gid(s_ctx.context, 1, 0, &s_ctx.gid);
-
-//    char my_data[100];
-//    sprintf(my_data, "
-
-    // client needs to get the rkey and remote_address
-    exchange_bootstrap_data(buffer, s_ctx.local_rkey);
-
-    return;
+    s_ctx.buffer = (char*)malloc(10000);
+    exchange_bootstrap_data(s_ctx.buffer, s_ctx.local_rkey, s_ctx.qpn, s_ctx.psn, s_ctx.lid);
 }
 
+int setup_rdma_2()
+{
+   puts("Moving to RTR");
+   printf("mtu: %d qpn: %d psn: %d lid: %d\n",
+          s_ctx.active_mtu, s_ctx.rem_qpn, s_ctx.rem_psn, s_ctx.rem_lid);
 
-int setup_rdma()
+   struct ibv_qp_attr attr;
+   memset(&attr, 0, sizeof(attr));
+   attr.qp_state = IBV_QPS_RTR;
+   attr.path_mtu = s_ctx.active_mtu;
+   attr.dest_qp_num = s_ctx.rem_qpn;
+   attr.rq_psn	    = s_ctx.rem_psn;
+   attr.max_dest_rd_atomic = 1;
+   attr.min_rnr_timer = 12;
+   attr.ah_attr.is_global = 0;
+   attr.ah_attr.dlid = s_ctx.rem_lid;
+   attr.ah_attr.sl = 0;
+   attr.ah_attr.src_path_bits = 0;
+   attr.ah_attr.port_num = 1;
+
+   CHECK(ibv_modify_qp(s_ctx.qp, &attr,
+			   IBV_QP_STATE              |
+			   IBV_QP_AV                 |
+			   IBV_QP_PATH_MTU           |
+			   IBV_QP_DEST_QPN           |
+			   IBV_QP_RQ_PSN             |
+			   IBV_QP_MAX_DEST_RD_ATOMIC |
+			   IBV_QP_MIN_RNR_TIMER) == 0);
+
+   puts("Moving to RTS");
+   memset(&attr, 0, sizeof(attr));
+
+   attr.qp_state = IBV_QPS_RTS;
+   attr.sq_psn	 = s_ctx.psn;
+   attr.timeout	 = 14;
+   attr.retry_cnt = 7;
+   attr.rnr_retry = 7; /* infinite */
+   attr.max_rd_atomic  = 1;
+
+   CHECK (ibv_modify_qp(s_ctx.qp, &attr,
+			   IBV_QP_STATE              |
+			   IBV_QP_TIMEOUT            |
+			   IBV_QP_RETRY_CNT          |
+			   IBV_QP_RNR_RETRY          |
+			   IBV_QP_SQ_PSN             |
+			   IBV_QP_MAX_QP_RD_ATOMIC) == 0);
+}
+
+int setup_rdma_1()
 {
    struct ibv_device **dev_list;
    struct ibv_device *ibv_dev;
@@ -123,14 +185,15 @@ int setup_rdma()
    s_ctx.mr = ibv_reg_mr(s_ctx.pd, buf, SIZE, IBV_ACCESS_LOCAL_WRITE | 
                             IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
    CHECK_MSG(s_ctx.mr != NULL, "Error getting mr");
+
+   printf("Created my. rkey: %u\n", s_ctx.mr->rkey);
    
    // create channel
-   struct ibv_comp_channel *event_channel;
-   event_channel = ibv_create_comp_channel(s_ctx.context);
+   s_ctx.event_channel = ibv_create_comp_channel(s_ctx.context);
    
-   s_ctx.send_cq = ibv_create_cq(s_ctx.context, 100, event_channel, 0, 0); 
+   s_ctx.send_cq = ibv_create_cq(s_ctx.context, 100, s_ctx.event_channel, 0, 0); 
    CHECK_MSG(s_ctx.send_cq != 0, "Error getting cq");
-   s_ctx.recv_cq = ibv_create_cq(s_ctx.context, 100, event_channel, 0, 0); 
+   s_ctx.recv_cq = ibv_create_cq(s_ctx.context, 100, s_ctx.event_channel, 0, 0); 
    CHECK_MSG(s_ctx.recv_cq != 0, "Error getting recv cq");
 
    struct ibv_qp_init_attr qp_attr;
@@ -160,24 +223,13 @@ int setup_rdma()
    int flags = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS;
    int retval = ibv_modify_qp(s_ctx.qp, &attr, flags);
    CHECK_MSG(retval == 0, "Error modifying qp");
-
-   puts("Handshaking");
-   handshake();
-
-   CHECK(ibv_req_notify_cq(s_ctx.send_cq, 0) == 0);
-   CHECK(ibv_req_notify_cq(s_ctx.recv_cq, 0) == 0);
-
-   void *ctx;
-   CHECK(ibv_get_cq_event(event_channel, &s_ctx.recv_cq, &ctx) == 0);
-   
-   puts("Got event");
 }
 
 void wait_for_tcp_connection()
 {
-    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1)
-    {
-        perror("socket");
+	if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1)
+	{
+		perror("socket");
         exit(1);
     }
     if (setsockopt(sockfd,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(int)) == -1)
@@ -216,7 +268,19 @@ int main(void)
     timer = time(NULL);
 
     wait_for_tcp_connection();
-    setup_rdma();
+    setup_rdma_1();
+    puts("Handshaking");
+    get_port_data();
+    handshake();
+    setup_rdma_2();
+
+    CHECK(ibv_req_notify_cq(s_ctx.send_cq, 0) == 0);
+    CHECK(ibv_req_notify_cq(s_ctx.recv_cq, 0) == 0);
+
+    void *ctx;
+    CHECK(ibv_get_cq_event(s_ctx.event_channel, &s_ctx.recv_cq, &ctx) == 0);
+
+    puts("Got event");
 
     while(1);
 
