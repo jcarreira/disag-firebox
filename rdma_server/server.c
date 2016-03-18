@@ -27,7 +27,7 @@
    }\
 }
 
-#define SIZE 10000
+#define SIZE 500
 #define MYPORT 18515
 time_t timer;
 int sockfd, new_fd; // listen on sock_fd, new connection on new_fd
@@ -58,7 +58,6 @@ struct context {
    unsigned long long int rem_vaddr;
    uint32_t rem_rkey;
 
-   char* handshake_buffer;
    char* rdma_buffer;
    
 } s_ctx;
@@ -115,8 +114,7 @@ int get_port_data()
 
 void handshake()
 {
-    s_ctx.handshake_buffer = (char*)malloc(10000);
-    exchange_bootstrap_data(s_ctx.handshake_buffer, s_ctx.local_rkey, s_ctx.qpn, s_ctx.psn, s_ctx.lid);
+    exchange_bootstrap_data(s_ctx.rdma_buffer, s_ctx.local_rkey, s_ctx.qpn, s_ctx.psn, s_ctx.lid);
 }
 
 int setup_rdma_2()
@@ -250,7 +248,7 @@ int setup_rdma_1()
    attr.qp_state        = IBV_QPS_INIT;
    attr.pkey_index      = 0;
    attr.port_num        = 1;
-   attr.qp_access_flags = 0;
+   attr.qp_access_flags = IBV_ACCESS_REMOTE_WRITE  | IBV_ACCESS_REMOTE_READ|IBV_ACCESS_REMOTE_ATOMIC ;//0;
 
    int flags = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS;
    int retval = ibv_modify_qp(s_ctx.qp, &attr, flags);
@@ -320,6 +318,8 @@ int main(void)
     } while (num_comp == 0 && num_comp2==0);
 
     puts("YEAY");
+    printf("rdma_buffer: %s\n", s_ctx.rdma_buffer);    
+
     CHECK(ibv_get_cq_event(s_ctx.event_channel, &s_ctx.recv_cq, &ctx) == 0);
 
     puts("Got event");
