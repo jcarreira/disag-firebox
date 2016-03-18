@@ -6,6 +6,8 @@
 #include <net/sock.h>
 #include <linux/socket.h>
 #include <linux/module.h>
+#include <linux/delay.h>
+
 
 #include <rdma/ib_verbs.h>
 #include <rdma/rdma_cm.h>
@@ -394,7 +396,7 @@ int modify_qp(void)
     attr.timeout = 14;
     attr.retry_cnt = 7;
     attr.rnr_retry = 6;
-    //attr.qp_psn = s_ctx.psn;
+    attr.sq_psn = s_ctx.psn;
     attr.max_rd_atomic = 1;
     
     printk(KERN_INFO "Going to RTS..\n");
@@ -415,6 +417,7 @@ do_some_rdma_kungfu(void)
 
     char* rdma_recv_buffer = kmalloc(500, GFP_KERNEL);
     CHECK(rdma_recv_buffer != 0);
+    strcpy(rdma_recv_buffer, "HELLO WORLD");
 
 
     s_ctx.mr = ib_get_dma_mr(s_ctx.pd, IB_ACCESS_REMOTE_READ | IB_ACCESS_REMOTE_WRITE | IB_ACCESS_LOCAL_WRITE);
@@ -429,8 +432,10 @@ do_some_rdma_kungfu(void)
 
     modify_qp();
 
-    memset(&sg, 0, sizeof(sg));
+
     printk(KERN_INFO "Setting sg..\n");
+#ifdef DO_RDMA_READ
+    memset(&sg, 0, sizeof(sg));
     sg.addr     = (uintptr_t)rdma_recv_buffer;
     sg.length   = 500;
     sg.lkey     = s_ctx.mr->lkey;
@@ -444,6 +449,23 @@ do_some_rdma_kungfu(void)
     wr.send_flags = 0;
     wr.wr.rdma.remote_addr = s_ctx.rem_vaddr;
     wr.wr.rdma.rkey        = s_ctx.rem_rkey;
+#else
+    memset(&sg, 0, sizeof(sg));
+    sg.addr  = (uintptr_t)dma_addr;//rdma_recv_buffer;
+    sg.length = 500;
+    sg.lkey  = s_ctx.mr->lkey;
+
+    printk(KERN_INFO "Working on IB_WR_SEND wr..\n");
+    memset(&wr, 0, sizeof(wr));
+    wr.wr_id      = (uintptr_t)&s_ctx;
+    wr.sg_list    = &sg;
+    wr.num_sge    = 1;
+    wr.opcode     = IB_WR_SEND;
+    wr.send_flags = IB_SEND_SIGNALED;
+#endif
+
+    printk(KERN_INFO "Sleeping 1 secs\n");
+    msleep(1000);
 
 
     printk(KERN_INFO "Posting send..\n");
@@ -460,7 +482,6 @@ void handshake(void)
     char data[500];
     unsigned long long int vaddr = 0;
 
-    printk(KERN_WARNING "receiving vaddr:rkey:etc\n");
     receive_data(data, 500);
     printk(KERN_WARNING "data received: %s\n", data);
     
@@ -485,10 +506,11 @@ void get_port_data(void)
     CHECK2(retval == 0);
     CHECK_MSG2(attr.active_mtu == 5, "!!!!!!!!Wrong device!!!!!!");
 
-    printk(KERN_WARNING "Query gid\n");
     s_ctx.lid = attr.lid;
     s_ctx.qpn = s_ctx.qp->qp_num;
-    s_ctx.psn = 10 & 0xffffff;
+
+    get_random_bytes(&s_ctx.psn, sizeof(s_ctx.psn));
+    s_ctx.psn &= 0xffffff;
     s_ctx.active_mtu = attr.active_mtu;
 
     ib_query_gid(s_ctx.device, 1, 0, &s_ctx.gid, &gid_attr);
@@ -507,10 +529,14 @@ void add_device(struct ib_device* dev) {
         printk(KERN_WARNING "Enough devices. Returning\n");
         return;
     }
+
+    // We care abou the second device
+    // The first one is ethernet
     printk(KERN_WARNING "Installing device\n");
 
     s_ctx.device = mlnx_device = dev;
 
+    // get device attrs
     ib_query_device(dev, &mlnx_device_attr); 
 
     print_device_attr(mlnx_device_attr);
@@ -526,7 +552,6 @@ void add_device(struct ib_device* dev) {
     CHECK_MSG2(s_ctx.send_cq != 0, "Error creating CQ");
     CHECK_MSG2(s_ctx.recv_cq != 0, "Error creating CQ");
 
-    
     CHECK2(ib_req_notify_cq(s_ctx.recv_cq, IB_CQ_NEXT_COMP) == 0);
     CHECK2(ib_req_notify_cq(s_ctx.send_cq, IB_CQ_NEXT_COMP) == 0);
 
@@ -534,13 +559,13 @@ void add_device(struct ib_device* dev) {
     memset(&s_ctx.qp_attr, 0, sizeof(struct ib_qp_init_attr));
     s_ctx.qp_attr.send_cq = s_ctx.send_cq;
     s_ctx.qp_attr.recv_cq = s_ctx.recv_cq;
-    s_ctx.qp_attr.cap.max_send_wr  = 1;
-    s_ctx.qp_attr.cap.max_recv_wr  = 1;
+    s_ctx.qp_attr.cap.max_send_wr  = 10;
+    s_ctx.qp_attr.cap.max_recv_wr  = 10;
     s_ctx.qp_attr.cap.max_send_sge = 1;
     s_ctx.qp_attr.cap.max_recv_sge = 1;
     s_ctx.qp_attr.cap.max_inline_data = 0;
     s_ctx.qp_attr.qp_type = IB_QPT_RC;
-    //s_ctx.qp_attr.sq_sig_type = IB_SIGNAL_ALL_WR;
+    s_ctx.qp_attr.sq_sig_type = IB_SIGNAL_ALL_WR;
 
     s_ctx.qp = ib_create_qp(s_ctx.pd, &s_ctx.qp_attr);
 
@@ -548,6 +573,7 @@ void add_device(struct ib_device* dev) {
 
     CHECK_MSG2(connect() == 0, "Error connecting");
 
+    // Get some useful data from port
     get_port_data(); 
     handshake(); 
 
@@ -555,18 +581,17 @@ void add_device(struct ib_device* dev) {
 }
 
 void remove_device(struct ib_device* dev) {
-    printk(KERN_WARNING "remove\n ");
+    printk(KERN_WARNING "remove_device\n ");
 }
 
 struct ib_client my_client;
 static int __init client_module_init( void ) {
 
-    my_client.name = "MY NAME";
+    my_client.name = "DISAG_MEM";
     my_client.add = add_device;
     my_client.remove = remove_device;
 
     ib_register_client(&my_client);
-    // this is hopefully going to add_device
     return 0;
 }
 
