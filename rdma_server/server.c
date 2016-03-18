@@ -58,7 +58,8 @@ struct context {
    unsigned long long int rem_vaddr;
    uint32_t rem_rkey;
 
-   char* buffer;
+   char* handshake_buffer;
+   char* rdma_buffer;
    
 } s_ctx;
 
@@ -99,7 +100,11 @@ int get_port_data()
 
     s_ctx.lid = attr.lid;
     s_ctx.qpn = s_ctx.qp->qp_num;
-    s_ctx.psn = lrand48() & 0xffffff;
+
+    long int rand_value = rand();//lrand48();
+    s_ctx.psn = rand_value & 0xffffff;
+    printf("Random value: %ld psn: %d\n", rand_value, s_ctx.psn);
+
     s_ctx.local_rkey = s_ctx.mr->rkey;
     s_ctx.active_mtu = attr.active_mtu;
 
@@ -110,8 +115,8 @@ int get_port_data()
 
 void handshake()
 {
-    s_ctx.buffer = (char*)malloc(10000);
-    exchange_bootstrap_data(s_ctx.buffer, s_ctx.local_rkey, s_ctx.qpn, s_ctx.psn, s_ctx.lid);
+    s_ctx.handshake_buffer = (char*)malloc(10000);
+    exchange_bootstrap_data(s_ctx.handshake_buffer, s_ctx.local_rkey, s_ctx.qpn, s_ctx.psn, s_ctx.lid);
 }
 
 int setup_rdma_2()
@@ -160,6 +165,33 @@ int setup_rdma_2()
 			   IBV_QP_RNR_RETRY          |
 			   IBV_QP_SQ_PSN             |
 			   IBV_QP_MAX_QP_RD_ATOMIC) == 0);
+
+   puts("Moved to RTS");
+
+#define DO_RECEIVE_WR
+#ifdef DO_RECEIVE_WR
+   puts("Building receive WR");
+
+   struct ibv_sge sg;
+   struct ibv_recv_wr wr;
+   struct ibv_recv_wr *bad_wr;
+
+   memset(&sg, 0, sizeof(sg));
+   sg.addr	  = (uintptr_t)s_ctx.rdma_buffer;
+   sg.length = SIZE;
+   sg.lkey	  = s_ctx.mr->lkey;
+
+   memset(&wr, 0, sizeof(wr));
+   wr.wr_id      = 0;
+   wr.sg_list    = &sg;
+   wr.num_sge    = 1;
+
+   puts("Ibv_post_recv");
+   if (ibv_post_recv(s_ctx.qp, &wr, &bad_wr)) {
+	   fprintf(stderr, "Error, ibv_post_recv() failed\n");
+	   return -1;
+   }
+#endif
 }
 
 int setup_rdma_1()
@@ -179,10 +211,10 @@ int setup_rdma_1()
    s_ctx.pd = ibv_alloc_pd(s_ctx.context);
    CHECK_MSG(s_ctx.pd != 0, "Error gettign pd");
 
-   char* buf = (char*)malloc(SIZE);
-   strcpy(buf, "AHOY!");
-   CHECK_MSG(buf != 0, "Error getting buf");
-   s_ctx.mr = ibv_reg_mr(s_ctx.pd, buf, SIZE, IBV_ACCESS_LOCAL_WRITE | 
+   s_ctx.rdma_buffer = (char*)malloc(SIZE);
+   strcpy(s_ctx.rdma_buffer, "AHOY!");
+   CHECK_MSG(s_ctx.rdma_buffer != 0, "Error getting buf");
+   s_ctx.mr = ibv_reg_mr(s_ctx.pd, s_ctx.rdma_buffer, SIZE, IBV_ACCESS_LOCAL_WRITE | 
                             IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
    CHECK_MSG(s_ctx.mr != NULL, "Error getting mr");
 
@@ -200,8 +232,8 @@ int setup_rdma_1()
    memset(&qp_attr, 0, sizeof(struct ibv_qp_init_attr));
    qp_attr.send_cq = s_ctx.send_cq;
    qp_attr.recv_cq = s_ctx.recv_cq;
-   qp_attr.cap.max_send_wr  = 1;
-   qp_attr.cap.max_recv_wr  = 1;
+   qp_attr.cap.max_send_wr  = 10;
+   qp_attr.cap.max_recv_wr  = 10;
    qp_attr.cap.max_send_sge = 1;
    qp_attr.cap.max_recv_sge = 1;
    qp_attr.cap.max_inline_data = 0;
@@ -269,15 +301,25 @@ int main(void)
 
     wait_for_tcp_connection();
     setup_rdma_1();
-    puts("Handshaking");
     get_port_data();
+    puts("Handshaking");
     handshake();
     setup_rdma_2();
 
     CHECK(ibv_req_notify_cq(s_ctx.send_cq, 0) == 0);
     CHECK(ibv_req_notify_cq(s_ctx.recv_cq, 0) == 0);
 
+    puts("ibv_get_cq_event");
     void *ctx;
+
+    int num_comp, num_comp2;
+    struct ibv_wc wc;
+    do {
+	    num_comp = ibv_poll_cq(s_ctx.recv_cq, 1, &wc);
+	    num_comp2 = ibv_poll_cq(s_ctx.send_cq, 1, &wc);
+    } while (num_comp == 0 && num_comp2==0);
+
+    puts("YEAY");
     CHECK(ibv_get_cq_event(s_ctx.event_channel, &s_ctx.recv_cq, &ctx) == 0);
 
     puts("Got event");
