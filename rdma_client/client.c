@@ -8,9 +8,10 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 
-
 #include <rdma/ib_verbs.h>
 #include <rdma/rdma_cm.h>
+
+#include "log.h"
 
 #define SIZE 500
 #define MAX  100
@@ -87,11 +88,12 @@ struct context {
    int rem_lid;
 
    char* rdma_recv_buffer;
+   u64 dma_addr;
 } s_ctx;
 
 void print_device_attr(struct ib_device_attr dev_attr)
 {
-   printk(KERN_WARNING "fw_ver: %llu\n"
+   LOG_KERN(LOG_INFO, ("fw_ver: %llu\n"
            "sys_image_guid: %llu\n"
            "max_mr_size: %llu\n"
            "page_size_cap: %llu\n"
@@ -114,28 +116,24 @@ void print_device_attr(struct ib_device_attr dev_attr)
            dev_attr.page_size_cap, dev_attr.vendor_part_id, dev_attr.vendor_part_id,
            dev_attr.hw_ver, dev_attr.max_qp, dev_attr.max_qp_wr, dev_attr.device_cap_flags,
            dev_attr.max_sge, dev_attr.max_sge_rd, dev_attr.max_cq, dev_attr.max_mr, dev_attr.max_mr,
-           dev_attr.max_pd, dev_attr.max_qp_rd_atom, dev_attr.max_ee_rd_atom, dev_attr.max_res_rd_atom);
-            //%lu %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d
-            //%d %d
-
+           dev_attr.max_pd, dev_attr.max_qp_rd_atom, dev_attr.max_ee_rd_atom, dev_attr.max_res_rd_atom));
 }
-
 
 void async_event_handler(struct ib_event_handler* ieh, struct ib_event *ie)
 {
-    printk(KERN_WARNING "async_event_handler\n");
+    LOG_KERN(LOG_INFO, ("async_event_handler\n"));
 }
 
 void print_port_info(struct ib_port_attr port_attr)
 {
    
-   printk(KERN_WARNING "Port 1 info\npkey_tbl_len: %d\n"
+   LOG_KERN(LOG_INFO, ("Port 1 info\npkey_tbl_len: %d\n"
            "lid: %d\n"
            "sm_lid: %d\n"
            "active_speed: %d\n"
            "active_width: %d\n",
            port_attr.pkey_tbl_len, port_attr.lid, port_attr.sm_lid, 
-           port_attr.active_speed, port_attr.active_width);
+           port_attr.active_speed, port_attr.active_width));
 }
 
 void get_port_info(struct ib_device *dev)
@@ -147,15 +145,15 @@ void get_port_info(struct ib_device *dev)
 void comp_handler_send(struct ib_cq* cq, void* cq_context)
 {
     struct ib_wc wc;
-    printk(KERN_WARNING "COMP HANDLER\n");
+    LOG_KERN(LOG_INFO, ("COMP HANDLER\n"));
     do {
 	    while (ib_poll_cq(cq, 1, &wc)> 0) {
 		    if (wc.status == IB_WC_SUCCESS) {
-			    printk(KERN_WARNING "IB_WC_SUCCESS\n");
-			    printk(KERN_WARNING "%s\n", s_ctx.rdma_recv_buffer);
+			    LOG_KERN(LOG_INFO, ("IB_WC_SUCCESS\n"));
+			    LOG_KERN(LOG_INFO, ("%s\n", s_ctx.rdma_recv_buffer));
                             
 		    } else {
-			    printk(KERN_WARNING "FAILURE %d\n", wc.status);
+			    LOG_KERN(LOG_INFO, ("FAILURE %d\n", wc.status));
 		    }
 	    }
     } while (ib_req_notify_cq(cq, IB_CQ_NEXT_COMP |
@@ -164,13 +162,14 @@ void comp_handler_send(struct ib_cq* cq, void* cq_context)
 
 void comp_handler_recv(struct ib_cq* cq, void* cq_context)
 {
-	printk(KERN_WARNING "COMP HANDLER\n");
+	LOG_KERN(LOG_INFO, ("COMP HANDLER\n"));
 }
 
 void cq_event_handler_send(struct ib_event* ib_e, void* v)
 {
-    printk(KERN_WARNING "CQ HANDLER\n");
+    LOG_KERN(LOG_INFO, ("CQ HANDLER\n"));
 }
+
 void cq_event_handler_recv(struct ib_event* ib_e, void* v)
 {
     printk(KERN_WARNING "CQ HANDLER\n");
@@ -361,14 +360,17 @@ int modify_qp(void)
     attr.qp_state = IB_QPS_INIT;
     attr.pkey_index = 0;
     attr.port_num = 1;
-    attr.qp_access_flags = IB_ACCESS_REMOTE_WRITE  | IB_ACCESS_REMOTE_READ| IB_ACCESS_REMOTE_ATOMIC;//0;
+    attr.qp_access_flags = IB_ACCESS_REMOTE_WRITE  | IB_ACCESS_REMOTE_READ |
+                           IB_ACCESS_REMOTE_ATOMIC;
 
-    printk(KERN_INFO "Going to INIT..\n");
-    retval = ib_modify_qp(s_ctx.qp, &attr, IB_QP_STATE | IB_QP_PKEY_INDEX | IB_QP_PORT | IB_QP_ACCESS_FLAGS);
+    LOG_KERN(LOG_INFO, ("Going to INIT..\n"));
+    retval = ib_modify_qp(s_ctx.qp, &attr, IB_QP_STATE | IB_QP_PKEY_INDEX | 
+                                           IB_QP_PORT | IB_QP_ACCESS_FLAGS);
     CHECK(retval == 0);
 
-    printk(KERN_INFO "Preparing for RTR. mtu: %d rem_qpn: %d rem_psn: %d rem_lid: %d\n",
-           s_ctx.active_mtu, s_ctx.rem_qpn, s_ctx.rem_psn, s_ctx.rem_lid);
+    LOG_KERN(LOG_INFO, ("Preparing for RTR. mtu: %d rem_qpn: %d rem_psn: %d rem_lid: %d\n",
+           s_ctx.active_mtu, s_ctx.rem_qpn, s_ctx.rem_psn, s_ctx.rem_lid));
+
     memset(&attr, 0, sizeof(attr));
     attr.qp_state = IB_QPS_RTR;
     attr.path_mtu = s_ctx.active_mtu;
@@ -376,13 +378,12 @@ int modify_qp(void)
     attr.rq_psn = s_ctx.rem_psn;
     attr.max_dest_rd_atomic = 1;
     attr.min_rnr_timer = 12;
-    //attr.ah_attr.is_global = 0;
     attr.ah_attr.dlid = s_ctx.rem_lid;
     attr.ah_attr.sl = 0; // service level
     attr.ah_attr.src_path_bits = 0;
     attr.ah_attr.port_num = 1;
    
-    printk(KERN_INFO "Going to RTR..\n");
+    LOG_KERN(LOG_INFO, ("Going to RTR..\n"));
     retval = ib_modify_qp(s_ctx.qp, &attr,
 		    IB_QP_STATE | 
                     IB_QP_AV | 
@@ -392,7 +393,7 @@ int modify_qp(void)
                     IB_QP_MAX_DEST_RD_ATOMIC |
                     IB_QP_MIN_RNR_TIMER);
     if(retval) {
-       printk(KERN_INFO "RTR failed ret: %d..\n", retval);
+       LOG_KERN(LOG_INFO, ("RTR failed ret: %d..\n", retval));
     }
     CHECK(retval == 0);
 
@@ -403,7 +404,7 @@ int modify_qp(void)
     attr.sq_psn = s_ctx.psn;
     attr.max_rd_atomic = 1;
     
-    printk(KERN_INFO "Going to RTS..\n");
+    LOG_KERN(LOG_INFO, ("Going to RTS..\n"));
     retval = ib_modify_qp(s_ctx.qp, &attr, IB_QP_STATE | IB_QP_TIMEOUT | 
                           IB_QP_RETRY_CNT | IB_QP_RNR_RETRY | IB_QP_SQ_PSN | IB_QP_MAX_QP_RD_ATOMIC);
 
@@ -412,73 +413,25 @@ int modify_qp(void)
 }
 
 static int
-do_some_rdma_kungfu(void)
+rdma_setup(void)
 {
-    struct ib_sge sg;
-    struct ib_send_wr wr;
-    struct ib_send_wr *bad_wr;
-    u64 dma_addr;
 
+    // create receive buffer
     s_ctx.rdma_recv_buffer = kmalloc(500, GFP_KERNEL);
     CHECK(s_ctx.rdma_recv_buffer != 0);
-    strcpy(s_ctx.rdma_recv_buffer, "HELLO WORLD");
 
-
+    // create memory region
     s_ctx.mr = ib_get_dma_mr(s_ctx.pd, IB_ACCESS_REMOTE_READ | IB_ACCESS_REMOTE_WRITE | IB_ACCESS_LOCAL_WRITE);
     CHECK(s_ctx.mr != 0);
 
     s_ctx.rkey = s_ctx.mr->rkey;
 
-    dma_addr = ib_dma_map_single(s_ctx.device, s_ctx.rdma_recv_buffer, 500, DMA_BIDIRECTIONAL);
-    CHECK(ib_dma_mapping_error(s_ctx.device, dma_addr) == 0);
-    //s_ctx.mr = ib_reg_mr(s_ctx.pd, rdma_recv_buffer, 500, 
-    //           IB_ACCESS_LOCAL_WRITE | IB_ACCESS_REMOTE_WRITE | IB_ACCESS_REMOTE_READ);
+    // get dma_addr
+    s_ctx.dma_addr = ib_dma_map_single(s_ctx.device, s_ctx.rdma_recv_buffer, 500, DMA_BIDIRECTIONAL);
+    CHECK(ib_dma_mapping_error(s_ctx.device, s_ctx.dma_addr) == 0);
 
+    // modify QP until RTS
     modify_qp();
-
-
-    printk(KERN_INFO "Setting sg..\n");
-#define DO_RDMA_READ
-#ifdef DO_RDMA_READ
-    memset(&sg, 0, sizeof(sg));
-    sg.addr     = (uintptr_t)dma_addr;//rdma_recv_buffer;
-    sg.length   = 500;
-    sg.lkey     = s_ctx.mr->lkey;
-
-    printk(KERN_INFO "Working on IB_WR_RDMA_READ wr..\n");
-    memset(&wr, 0, sizeof(wr));
-    wr.wr_id      = (uintptr_t)&s_ctx;//0;
-    wr.sg_list    = &sg;
-    wr.num_sge    = 1;
-    wr.opcode     = IB_WR_RDMA_READ;
-    wr.send_flags = IB_SEND_SIGNALED; //0
-    wr.wr.rdma.remote_addr = s_ctx.rem_vaddr;
-    wr.wr.rdma.rkey        = s_ctx.rem_rkey;
-#else
-    memset(&sg, 0, sizeof(sg));
-    sg.addr  = (uintptr_t)dma_addr;//rdma_recv_buffer;
-    sg.length = 500;
-    sg.lkey  = s_ctx.mr->lkey;
-
-    printk(KERN_INFO "Working on IB_WR_SEND wr..\n");
-    memset(&wr, 0, sizeof(wr));
-    wr.wr_id      = (uintptr_t)&s_ctx;
-    wr.sg_list    = &sg;
-    wr.num_sge    = 1;
-    wr.opcode     = IB_WR_SEND;
-    wr.send_flags = IB_SEND_SIGNALED;
-#endif
-
-    printk(KERN_INFO "Sleeping 1 secs\n");
-    msleep(1000);
-
-
-    printk(KERN_INFO "Posting send..\n");
-    if (ib_post_send(s_ctx.qp, &wr, &bad_wr)) {
-	    printk(KERN_INFO "Error posting send..\n");
-	    return -1;
-    }
-    printk(KERN_INFO "Send posted..\n");
     return 0;
 }
 
@@ -506,10 +459,10 @@ void get_port_data(void)
     struct ib_gid_attr gid_attr;
     int retval;
     
-    printk(KERN_WARNING "Get port data\n");
+    LOG_KERN(LOG_INFO, ("Get port data\n"));
     retval = ib_query_port(s_ctx.device,1,&attr);
     CHECK2(retval == 0);
-    CHECK_MSG2(attr.active_mtu == 5, "!!!!!!!!Wrong device!!!!!!");
+    CHECK_MSG2(attr.active_mtu == 5, "Error: Wrong device");
 
     s_ctx.lid = attr.lid;
     s_ctx.qpn = s_ctx.qp->qp_num;
@@ -521,23 +474,80 @@ void get_port_data(void)
     ib_query_gid(s_ctx.device, 1, 0, &s_ctx.gid, &gid_attr);
 } 
 
-void add_device2(struct ib_device* dev) {
+void add_device2(struct ib_device* dev)
+{
     printk(KERN_WARNING "We got a new device V2!\n");
 }
 
 static int devices_seen = 0;
-void add_device(struct ib_device* dev) {
-    devices_seen++;
-    printk(KERN_WARNING "We got a new device! %d\n ", devices_seen);
 
-    if (devices_seen < 2) {
-        printk(KERN_WARNING "Enough devices. Returning\n");
-        return;
+int is_second_device(void)
+{
+    devices_seen++;
+    if (devices_seen == 2) {
+        return 1;
+    } else {
+        return 0;
     }
+}
+
+int post_send_wr(void)
+{
+    struct ib_sge sg;
+    struct ib_send_wr wr;
+    struct ib_send_wr *bad_wr;
+    LOG_KERN(LOG_INFO, ("Setting sg..\n"));
+#define DO_RDMA_READ
+#ifdef DO_RDMA_READ
+    memset(&sg, 0, sizeof(sg));
+    sg.addr     = (uintptr_t)s_ctx.dma_addr;//rdma_recv_buffer;
+    sg.length   = 500;
+    sg.lkey     = s_ctx.mr->lkey;
+
+    LOG_KERN(LOG_INFO, ("Working on IB_WR_RDMA_READ wr..\n"));
+    memset(&wr, 0, sizeof(wr));
+    wr.wr_id      = (uintptr_t)&s_ctx;//0;
+    wr.sg_list    = &sg;
+    wr.num_sge    = 1;
+    wr.opcode     = IB_WR_RDMA_READ;
+    wr.send_flags = IB_SEND_SIGNALED; //0
+    wr.wr.rdma.remote_addr = s_ctx.rem_vaddr;
+    wr.wr.rdma.rkey        = s_ctx.rem_rkey;
+#else
+    memset(&sg, 0, sizeof(sg));
+    sg.addr  = (uintptr_t)s_ctx.dma_addr;//rdma_recv_buffer;
+    sg.length = 500;
+    sg.lkey  = s_ctx.mr->lkey;
+
+    LOG_KERN(LOG_INFO, "Working on IB_WR_SEND wr..\n");
+    memset(&wr, 0, sizeof(wr));
+    wr.wr_id      = (uintptr_t)&s_ctx;
+    wr.sg_list    = &sg;
+    wr.num_sge    = 1;
+    wr.opcode     = IB_WR_SEND;
+    wr.send_flags = IB_SEND_SIGNALED;
+#endif
+
+    LOG_KERN(LOG_INFO, ("Posting send..\n"));
+    if (ib_post_send(s_ctx.qp, &wr, &bad_wr)) {
+	    printk(KERN_INFO "Error posting send..\n");
+	    return -1;
+    }
+    LOG_KERN(LOG_INFO, ("Send posted..\n"));
+
+    return 0;
+}
+
+void add_device(struct ib_device* dev)
+{
+    LOG_KERN(LOG_INFO, ("We got a new device! %d\n ", devices_seen));
+
+    if (!is_second_device())
+        return;
 
     // We care abou the second device
     // The first one is ethernet
-    printk(KERN_WARNING "Installing device\n");
+    LOG_KERN(LOG_INFO, ("Installing device\n"));
 
     s_ctx.device = mlnx_device = dev;
 
@@ -545,18 +555,21 @@ void add_device(struct ib_device* dev) {
     ib_query_device(dev, &mlnx_device_attr); 
 
     print_device_attr(mlnx_device_attr);
-    
+   
+    // register handler 
     INIT_IB_EVENT_HANDLER(&ieh, dev, async_event_handler);
     ib_register_event_handler(&ieh);
 
     s_ctx.pd = ib_alloc_pd(dev);
     CHECK_MSG2(s_ctx.pd != 0, "Error creating pd");
 
+    // create completion queues
     s_ctx.send_cq = ib_create_cq(dev, comp_handler_send, cq_event_handler_send, NULL, 10, 0);
     s_ctx.recv_cq = ib_create_cq(dev, comp_handler_recv, cq_event_handler_recv, NULL, 10, 0);
     CHECK_MSG2(s_ctx.send_cq != 0, "Error creating CQ");
     CHECK_MSG2(s_ctx.recv_cq != 0, "Error creating CQ");
 
+    // request notifications
     CHECK2(ib_req_notify_cq(s_ctx.recv_cq, IB_CQ_NEXT_COMP) == 0);
     CHECK2(ib_req_notify_cq(s_ctx.send_cq, IB_CQ_NEXT_COMP) == 0);
 
@@ -573,30 +586,41 @@ void add_device(struct ib_device* dev) {
     s_ctx.qp_attr.sq_sig_type = IB_SIGNAL_ALL_WR;
 
     s_ctx.qp = ib_create_qp(s_ctx.pd, &s_ctx.qp_attr);
+    CHECK_MSG2(s_ctx.qp != 0, "Error creating QP");
 
-    printk(KERN_INFO "Start client module.\n");
+    LOG_KERN(LOG_INFO, ("Start client module.\n"));
 
     CHECK_MSG2(connect() == 0, "Error connecting");
 
     // Get some useful data from port
     get_port_data(); 
+
+    // exchange data to bootstrap RDMA
     handshake(); 
 
-    do_some_rdma_kungfu();
+    // create memory region
+    // modify QP to RTS
+    rdma_setup();
+
+    // post a send request
+    post_send_wr();
 }
 
-void remove_device(struct ib_device* dev) {
-    printk(KERN_WARNING "remove_device\n ");
+void remove_device(struct ib_device* dev)
+{
+    LOG_KERN(LOG_INFO, ("remove_device\n "));
 }
 
 struct ib_client my_client;
-static int __init client_module_init( void ) {
-
+static int __init client_module_init(void)
+{
     my_client.name = "DISAG_MEM";
     my_client.add = add_device;
     my_client.remove = remove_device;
 
     ib_register_client(&my_client);
+
+    while(1);
     return 0;
 }
 
@@ -605,7 +629,7 @@ static void __exit client_module_exit( void )
     sock_release(sock);
     ib_unregister_event_handler(&ieh);
     ib_unregister_client(&my_client);
-    printk(KERN_INFO "Exit client module.\n");
+    LOG_KERN(LOG_INFO, ("Exit client module.\n"));
 }
 
 module_init( client_module_init );
