@@ -144,6 +144,7 @@ void get_port_info(struct ib_device *dev)
     print_port_info(port_attr);
 }
 
+static int comp_handler_success = 0;
 void comp_handler_send(struct ib_cq* cq, void* cq_context)
 {
     struct ib_wc wc;
@@ -153,6 +154,8 @@ void comp_handler_send(struct ib_cq* cq, void* cq_context)
 		    if (wc.status == IB_WC_SUCCESS) {
 			    printk(KERN_WARNING "IB_WC_SUCCESS\n");
 			    printk(KERN_WARNING "%s\n", s_ctx.rdma_recv_buffer);
+
+                            comp_handler_success++;
                             
 		    } else {
 			    printk(KERN_WARNING "FAILURE %d\n", wc.status);
@@ -411,6 +414,56 @@ int modify_qp(void)
     return 0;
 }
 
+static int prepare_qp(void)
+{
+    s_ctx.mr = ib_get_dma_mr(s_ctx.pd, IB_ACCESS_REMOTE_READ | IB_ACCESS_REMOTE_WRITE | IB_ACCESS_LOCAL_WRITE);
+    CHECK(s_ctx.mr != 0);
+
+    s_ctx.rkey = s_ctx.mr->rkey;
+    
+    return modify_qp();
+}
+
+static int
+send_rdma_write(char* data_to_send, int len)
+{
+    struct ib_sge sg;
+    struct ib_send_wr wr;
+    struct ib_send_wr *bad_wr;
+    u64 dma_addr;
+
+    char *data = kmalloc(len, GFP_KERNEL);
+    CHECK(data != 0);
+    strcpy(data, data_to_send);
+
+    dma_addr = ib_dma_map_single(s_ctx.device, data, len, DMA_BIDIRECTIONAL);
+    CHECK(ib_dma_mapping_error(s_ctx.device, dma_addr) == 0);
+
+    printk(KERN_INFO "Setting sg..\n");
+    memset(&sg, 0, sizeof(sg));
+    sg.addr  = (uintptr_t)dma_addr;
+    sg.length = len;
+    sg.lkey  = s_ctx.mr->lkey;
+
+    printk(KERN_INFO "Working on IB_WR_RDMA_WRITE wr..\n");
+    memset(&wr, 0, sizeof(wr));
+    wr.wr_id      = (uintptr_t)&s_ctx;
+    wr.sg_list    = &sg;
+    wr.num_sge    = 1;
+    wr.opcode     = IB_WR_RDMA_WRITE;
+    wr.send_flags = IB_SEND_SIGNALED;
+    wr.wr.rdma.remote_addr = s_ctx.rem_vaddr;
+    wr.wr.rdma.rkey        = s_ctx.rem_rkey;
+
+    printk(KERN_INFO "Posting send..\n");
+    if (ib_post_send(s_ctx.qp, &wr, &bad_wr)) {
+	    printk(KERN_INFO "Error posting send..\n");
+	    return -1;
+    }
+    printk(KERN_INFO "Send posted..\n");
+    return 0;
+}
+
 static int
 do_some_rdma_kungfu(void)
 {
@@ -423,7 +476,6 @@ do_some_rdma_kungfu(void)
     CHECK(s_ctx.rdma_recv_buffer != 0);
     strcpy(s_ctx.rdma_recv_buffer, "HELLO WORLD");
 
-
     s_ctx.mr = ib_get_dma_mr(s_ctx.pd, IB_ACCESS_REMOTE_READ | IB_ACCESS_REMOTE_WRITE | IB_ACCESS_LOCAL_WRITE);
     CHECK(s_ctx.mr != 0);
 
@@ -435,7 +487,6 @@ do_some_rdma_kungfu(void)
     //           IB_ACCESS_LOCAL_WRITE | IB_ACCESS_REMOTE_WRITE | IB_ACCESS_REMOTE_READ);
 
     modify_qp();
-
 
     printk(KERN_INFO "Setting sg..\n");
 #define DO_RDMA_WRITE
@@ -457,11 +508,11 @@ do_some_rdma_kungfu(void)
     wr.wr.rdma.rkey        = s_ctx.rem_rkey;
 #elif defined(DO_RDMA_WRITE)
     memset(&sg, 0, sizeof(sg));
-    sg.addr  = (uintptr_t)rdma_recv_buffer;
+    sg.addr  = (uintptr_t)dma_addr;
     sg.length = 500;
     sg.lkey  = s_ctx.mr->lkey;
 
-    printk(KERN_INFO "Working on IB_WR_SEND wr..\n");
+    printk(KERN_INFO "Working on IB_WR_RDMA_WRITE wr..\n");
     memset(&wr, 0, sizeof(wr));
     wr.wr_id      = (uintptr_t)&s_ctx;
     wr.sg_list    = &sg;
@@ -484,10 +535,6 @@ do_some_rdma_kungfu(void)
     wr.opcode     = IB_WR_SEND;
     wr.send_flags = IB_SEND_SIGNALED;
 #endif
-
-    printk(KERN_INFO "Sleeping 1 secs\n");
-    msleep(1000);
-
 
     printk(KERN_INFO "Posting send..\n");
     if (ib_post_send(s_ctx.qp, &wr, &bad_wr)) {
@@ -543,6 +590,8 @@ void add_device2(struct ib_device* dev) {
 
 static int devices_seen = 0;
 void add_device(struct ib_device* dev) {
+    char str[] = "HELLO WORLD";
+
     devices_seen++;
     printk(KERN_WARNING "We got a new device! %d\n ", devices_seen);
 
@@ -598,7 +647,13 @@ void add_device(struct ib_device* dev) {
     get_port_data(); 
     handshake(); 
 
-    do_some_rdma_kungfu();
+    prepare_qp();
+
+    send_rdma_write(str, strlen(str));
+    //do_some_rdma_kungfu();
+
+    while (comp_handler_success == 0)
+        ;
 }
 
 void remove_device(struct ib_device* dev) {
