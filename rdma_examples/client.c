@@ -438,7 +438,8 @@ do_some_rdma_kungfu(void)
 
 
     printk(KERN_INFO "Setting sg..\n");
-#define DO_RDMA_READ
+#define DO_RDMA_WRITE
+//#define DO_RDMA_READ
 #ifdef DO_RDMA_READ
     memset(&sg, 0, sizeof(sg));
     sg.addr     = (uintptr_t)dma_addr;//rdma_recv_buffer;
@@ -452,6 +453,21 @@ do_some_rdma_kungfu(void)
     wr.num_sge    = 1;
     wr.opcode     = IB_WR_RDMA_READ;
     wr.send_flags = IB_SEND_SIGNALED; //0
+    wr.wr.rdma.remote_addr = s_ctx.rem_vaddr;
+    wr.wr.rdma.rkey        = s_ctx.rem_rkey;
+#elif defined(DO_RDMA_WRITE)
+    memset(&sg, 0, sizeof(sg));
+    sg.addr  = (uintptr_t)rdma_recv_buffer;
+    sg.length = 500;
+    sg.lkey  = s_ctx.mr->lkey;
+
+    printk(KERN_INFO "Working on IB_WR_SEND wr..\n");
+    memset(&wr, 0, sizeof(wr));
+    wr.wr_id      = (uintptr_t)&s_ctx;
+    wr.sg_list    = &sg;
+    wr.num_sge    = 1;
+    wr.opcode     = IB_WR_RDMA_WRITE;
+    wr.send_flags = IB_SEND_SIGNALED;
     wr.wr.rdma.remote_addr = s_ctx.rem_vaddr;
     wr.wr.rdma.rkey        = s_ctx.rem_rkey;
 #else

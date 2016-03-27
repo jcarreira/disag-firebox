@@ -85,7 +85,7 @@ void exchange_bootstrap_data(void* virtual_address, uint32_t rkey, int qpn, int 
     memset(data_to_send, 0, 1000);
 
     sprintf(data_to_send, "%016Lx:%u:%x:%x:%x", (unsigned long long int)virtual_address, rkey, qpn, psn, lid);
-    LOG(LOG_INFO,("sending. vaddr: %lld rkey: %u qpn: %d psn:%d lid:%d\n",
+    LOG(LOG_INFO,("sending. vaddr: %lld rkey: %u qpn: %d psn:%d lid:%d",
            (unsigned long long int)virtual_address, rkey, qpn, psn, lid));
 
     int retval = send(new_fd, data_to_send, strlen(data_to_send), 0);

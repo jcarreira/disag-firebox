@@ -18,6 +18,7 @@
         if ((LEVEL) < LOG_LEVEL) {\
                     printf("%-20s | %3d |  ",__FUNCTION__,__LINE__); \
                     printf STR; \
+                    printf("\n"); \
                     fflush(stdout); \
                 } \
 } while(0);

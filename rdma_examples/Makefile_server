@@ -2,20 +2,11 @@ LDLIBS  := ${LDLIBS} -lrdmacm -libverbs -lpthread
 
 .PHONY: load unload
 
-all: server client
+all: server
 
-client: client.c
-	make -f  Makefile_module
-
-server: server.c
+server: server.c log.h
 	gcc server.c -O0 -ggdb -o server $(LDLIBS)
 
-load:
-	sudo insmod client.ko
-
-unload:
-	sudo rmmod -f client.ko
- 
 clean:
 	make -f  Makefile_module clean
 	rm -rf *.o server
