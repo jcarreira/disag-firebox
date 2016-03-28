@@ -17,10 +17,12 @@ typedef enum {RDMA_READ,RDMA_WRITE} RDMA_OP;
 typedef struct rdma_request
 {
     RDMA_OP rw;
-    void *local;
+    u64 dma_addr;
     uint32_t remote_offset;
     int length;
 } rdma_request;
+
+u64 rdma_map_address(void* addr, int length);
 
 int rdma_library_ready(void);
 

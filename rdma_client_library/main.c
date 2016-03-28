@@ -12,13 +12,15 @@
 #include "log.h"
 
 #define PORT 18515
+#define MEM_SIZE 10000
 
 static int __init main_module_init(void)
 {
     int retval;
     rdma_ctx_t ctx;
     rdma_request req;
-    char *mem;
+    char *mem1, *mem2;
+    u64 mem1_addr, mem2_addr;
 
     retval = rdma_library_init();
     
@@ -27,6 +29,7 @@ static int __init main_module_init(void)
     }
     else  {
         LOG_KERN(LOG_INFO, ("RDMA_LIB_INIT FAILED"));
+        return -1;
     }
 
     while(!rdma_library_ready())
@@ -39,27 +42,18 @@ static int __init main_module_init(void)
     }
     else  {
         LOG_KERN(LOG_INFO, ("RDMA_INIT FAILED"));
+        return -1;
     }
 
-    mem = kmalloc(10000, GFP_KERNEL);
+    mem1 = kmalloc(MEM_SIZE, GFP_KERNEL);
+    mem2 = kmalloc(MEM_SIZE, GFP_KERNEL);
 
-#if 0
-    req.rw = RDMA_READ;
-    req.local = mem;
-    req.remote_offset = 0;
-    req.length = 10;
-    LOG_KERN(LOG_INFO, ("Launching read op"));
-    retval = rdma_op(ctx, &req, 1);
-    if (retval == 0) {
-        LOG_KERN(LOG_INFO, (" RDMA READ SUCCESS"));
-    }
-    else  {
-        LOG_KERN(LOG_INFO, ("RDMA READ FAILED"));
-    }
-#else
-    strcpy(mem, "HELLO WORLD");
+    mem1_addr = rdma_map_address(mem1, MEM_SIZE);
+    mem2_addr = rdma_map_address(mem2, MEM_SIZE);
+
+    strcpy(mem1, "HELLO WORLD");
     req.rw = RDMA_WRITE;
-    req.local = mem;
+    req.dma_addr = mem1_addr;
     req.remote_offset = 0;
     req.length = 20;
     LOG_KERN(LOG_INFO, ("Launching write op"));
@@ -69,9 +63,53 @@ static int __init main_module_init(void)
     }
     else  {
         LOG_KERN(LOG_INFO, ("RDMA WRITE FAILED"));
+        return -1;
     }
-#endif
+
+    strcpy(mem2, "WRONG DATA"); 
+    req.rw = RDMA_READ;
+    req.dma_addr = mem2_addr;
+    req.remote_offset = 0;
+    req.length = 20;
+    LOG_KERN(LOG_INFO, ("Launching read op"));
+    retval = rdma_op(ctx, &req, 1);
+    if (retval == 0) {
+        LOG_KERN(LOG_INFO, (" RDMA READ SUCCESS: %s", mem2));
+    }
+    else  {
+        LOG_KERN(LOG_INFO, ("RDMA READ FAILED"));
+        return -1;
+    }
+
+    strcpy(mem1, "HERE WE GO AGAIN");
+    req.rw = RDMA_WRITE;
+    req.dma_addr = mem1_addr;
+    req.remote_offset = 0;
+    req.length = 20;
+    LOG_KERN(LOG_INFO, ("Launching write op"));
+    retval = rdma_op(ctx, &req, 1);
+    if (retval == 0) {
+        LOG_KERN(LOG_INFO, (" RDMA WRITE SUCCESS"));
+    }
+    else  {
+        LOG_KERN(LOG_INFO, ("RDMA WRITE FAILED"));
+        return -1;
+    }
     
+    strcpy(mem2, "PLAIN WRONG"); 
+    req.rw = RDMA_READ;
+    req.dma_addr = mem2_addr;
+    req.remote_offset = 0;
+    req.length = 20;
+    LOG_KERN(LOG_INFO, ("Launching read op"));
+    retval = rdma_op(ctx, &req, 1);
+    if (retval == 0) {
+        LOG_KERN(LOG_INFO, (" RDMA READ SUCCESS: %s", mem2));
+    }
+    else  {
+        LOG_KERN(LOG_INFO, ("RDMA READ FAILED"));
+        return -1;
+    }
 
     return 0;
 }

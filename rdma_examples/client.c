@@ -144,7 +144,7 @@ void get_port_info(struct ib_device *dev)
     print_port_info(port_attr);
 }
 
-static int comp_handler_success = 0;
+static volatile int comp_handler_success = 0;
 void comp_handler_send(struct ib_cq* cq, void* cq_context)
 {
     struct ib_wc wc;
@@ -431,11 +431,15 @@ send_rdma_write(char* data_to_send, int len)
     struct ib_send_wr wr;
     struct ib_send_wr *bad_wr;
     u64 dma_addr;
+    char* data;
 
-    char *data = kmalloc(len, GFP_KERNEL);
+    printk(KERN_INFO "Mallocing data..\n");
+
+    data = kmalloc(len, GFP_KERNEL);
     CHECK(data != 0);
     strcpy(data, data_to_send);
 
+    printk(KERN_INFO "Map single..\n");
     dma_addr = ib_dma_map_single(s_ctx.device, data, len, DMA_BIDIRECTIONAL);
     CHECK(ib_dma_mapping_error(s_ctx.device, dma_addr) == 0);
 
@@ -457,13 +461,49 @@ send_rdma_write(char* data_to_send, int len)
 
     printk(KERN_INFO "Posting send..\n");
     if (ib_post_send(s_ctx.qp, &wr, &bad_wr)) {
-	    printk(KERN_INFO "Error posting send..\n");
-	    return -1;
+            printk(KERN_INFO "Error posting send..\n");
+            return -1;
     }
     printk(KERN_INFO "Send posted..\n");
     return 0;
 }
 
+static int
+send_rdma_read(char* recv_buffer, int len)
+{
+    struct ib_sge sg;
+    struct ib_send_wr wr;
+    struct ib_send_wr *bad_wr;
+    u64 dma_addr;
+
+    printk(KERN_INFO "Map single..\n");
+    dma_addr = ib_dma_map_single(s_ctx.device, recv_buffer, len, DMA_BIDIRECTIONAL);
+    CHECK(ib_dma_mapping_error(s_ctx.device, dma_addr) == 0);
+
+    printk(KERN_INFO "Setting sg..\n");
+    memset(&sg, 0, sizeof(sg));
+    sg.addr  = (uintptr_t)dma_addr;
+    sg.length = len;
+    sg.lkey  = s_ctx.mr->lkey;
+
+    printk(KERN_INFO "Working on IB_WR_RDMA_WRITE wr..\n");
+    memset(&wr, 0, sizeof(wr));
+    wr.wr_id      = (uintptr_t)&s_ctx;
+    wr.sg_list    = &sg;
+    wr.num_sge    = 1;
+    wr.opcode     = IB_WR_RDMA_READ;
+    wr.send_flags = IB_SEND_SIGNALED;
+    wr.wr.rdma.remote_addr = s_ctx.rem_vaddr;
+    wr.wr.rdma.rkey        = s_ctx.rem_rkey;
+
+    printk(KERN_INFO "Posting send..\n");
+    if (ib_post_send(s_ctx.qp, &wr, &bad_wr)) {
+            printk(KERN_INFO "Error posting send..\n");
+            return -1;
+    }
+    printk(KERN_INFO "Send posted..\n");
+    return 0;
+}
 static int
 do_some_rdma_kungfu(void)
 {
@@ -591,6 +631,7 @@ void add_device2(struct ib_device* dev) {
 static int devices_seen = 0;
 void add_device(struct ib_device* dev) {
     char str[] = "HELLO WORLD";
+    char* mem_rdma_read;
 
     devices_seen++;
     printk(KERN_WARNING "We got a new device! %d\n ", devices_seen);
@@ -645,15 +686,32 @@ void add_device(struct ib_device* dev) {
 
     // Get some useful data from port
     get_port_data(); 
+
+    printk(KERN_INFO "Handshaking..\n");
     handshake(); 
 
+    printk(KERN_INFO "Preparing QP..\n");
     prepare_qp();
 
+    printk(KERN_INFO "Sending RDMA write..\n");
     send_rdma_write(str, strlen(str));
     //do_some_rdma_kungfu();
 
     while (comp_handler_success == 0)
         ;
+    printk(KERN_INFO "Handler done..\n");
+
+
+    mem_rdma_read = kmalloc(strlen(str), GFP_KERNEL); //10MB
+    strcpy(mem_rdma_read, "WRONG DATA");
+    
+    comp_handler_success = 0;
+    printk(KERN_INFO "Memory alloced..\n");
+    send_rdma_read(mem_rdma_read, strlen(str));
+    
+    while (comp_handler_success == 0)
+        ;
+    printk(KERN_INFO "Handler done. Received %s..\n", mem_rdma_read);
 }
 
 void remove_device(struct ib_device* dev) {

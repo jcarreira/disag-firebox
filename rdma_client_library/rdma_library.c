@@ -6,7 +6,6 @@
 #include <rdma/rdma_cm.h>
 
 #define RDMA_BUFFER_SIZE (1024*1024)
-#define MAX_OUTSTANDING_REQUESTS 100
 
 #define CHECK_MSG_RET(arg, msg, ret) {\
    if ((arg) == 0){\
@@ -38,6 +37,7 @@ struct rdma_ctx {
 
     char* rdma_recv_buffer;
     u64 dma_addr;
+    unsigned long rem_mem_size;
 
     int rem_qpn;
     int rem_psn;
@@ -46,7 +46,7 @@ struct rdma_ctx {
     unsigned long long int rem_vaddr;
     uint32_t rem_rkey;
 
-    unsigned long outstanding_requests;
+    volatile unsigned long outstanding_requests;
 };
 
 struct rdma_req_t {
@@ -281,6 +281,12 @@ static int handshake(rdma_ctx_t ctx)
     int retval;
     char data[500];
     unsigned long long int vaddr = 0;
+    
+
+    // first send mem size
+    sprintf(data, "%lu", ctx->rem_mem_size);
+    printk(KERN_WARNING "Sending: %s\n", data);
+    send_data(ctx, data, strlen(data));
 
     // receive handshake data from server
     retval = receive_data(ctx, data, 500);
@@ -367,6 +373,21 @@ static int modify_qp(rdma_ctx_t ctx)
     return 0;
 }
 
+u64 rdma_map_address(void* addr, int length)
+{
+    u64 dma_addr;
+
+    LOG_KERN(LOG_INFO, ("Mapping addr\n"));
+
+    dma_addr = ib_dma_map_single(rdma_ib_device.dev, addr, length, DMA_BIDIRECTIONAL);
+    if (ib_dma_mapping_error(rdma_ib_device.dev, dma_addr) != 0) {
+        LOG_KERN(LOG_INFO, ("Error mapping myaddr"));
+        return 0; //error
+    }
+
+    return dma_addr;
+}
+
 static int rdma_setup(rdma_ctx_t ctx)
 {
     // create receive buffer
@@ -402,14 +423,14 @@ static void comp_handler_send(struct ib_cq* cq, void* cq_context)
         while (ib_poll_cq(cq, 1, &wc)> 0) {
             if (wc.status == IB_WC_SUCCESS) {
                 LOG_KERN(LOG_INFO, ("IB_WC_SUCCESS\n"));
-                LOG_KERN(LOG_INFO, ("OP: %s",
+                LOG_KERN(LOG_INFO, ("OP: %s\n",
                             wc.opcode == IB_WC_RDMA_READ ? "IB_WC_RDMA_READ" :
                             wc.opcode == IB_WC_RDMA_WRITE ? "IB_WC_RDMA_WRITE" :
                             "other"));
-                LOG_KERN(LOG_INFO, ("byte_len: %d", wc.byte_len));
+                LOG_KERN(LOG_INFO, ("byte_len: %d\n", wc.byte_len));
                 
-                LOG_KERN(LOG_INFO, ("Decrementing outstanding requests..."));
-                //ctx->outstanding_requests--;
+                LOG_KERN(LOG_INFO, ("Decrementing outstanding requests...\n"));
+                ctx->outstanding_requests--;
             } else {
                 LOG_KERN(LOG_INFO, ("FAILURE %d\n", wc.status));
             }
@@ -449,13 +470,14 @@ rdma_ctx_t rdma_init(int npages, char* ip_addr, int port)
     int retval;
     rdma_ctx_t ctx;
 
-    LOG_KERN(LOG_INFO, ("RDMA_INIT. ip_addr: %s port: %d", ip_addr, port));
+    LOG_KERN(LOG_INFO, ("RDMA_INIT. ip_addr: %s port: %d npages: %d", ip_addr, port, npages));
     
     ctx = kmalloc(sizeof(struct rdma_ctx), GFP_KERNEL);
     if (!ctx)
         return NULL;
 
     memset(ctx, 0, sizeof(struct rdma_ctx));
+    ctx->rem_mem_size = npages * (1024 * 4);
 
     if (!rdma_ib_device.ib_device_initialized) {
         LOG_KERN(LOG_INFO, ("ERROR"));
@@ -520,28 +542,20 @@ rdma_ctx_t rdma_init(int npages, char* ip_addr, int port)
     return ctx;
 }
 
-struct ib_send_wr build_wr(rdma_ctx_t ctx, RDMA_OP op, void *addr, uint32_t remote_offset,
+struct ib_send_wr build_wr(rdma_ctx_t ctx, RDMA_OP op, u64 dma_addr, uint32_t remote_offset,
         int length)
 {
     struct ib_sge* sg;
     struct ib_send_wr wr;
-    u64 dma_addr;
 
     LOG_KERN(LOG_INFO, ("Building WR..\n"));
 
-    if (op == RDMA_READ)
-    {
-        dma_addr = ib_dma_map_single(rdma_ib_device.dev, addr, 100, DMA_BIDIRECTIONAL);
-        if (ib_dma_mapping_error(rdma_ib_device.dev, dma_addr) != 0)
-            LOG_KERN(LOG_INFO, ("Error mapping myaddr"));
-    }
-    
     sg =  kmalloc(sizeof(struct ib_sge), GFP_KERNEL);
     if(sg == NULL)
        LOG_KERN(LOG_INFO, ("Error allocating sg"));
 
     memset(sg, 0, sizeof(struct ib_sge));
-    sg->addr     = (uintptr_t)addr;
+    sg->addr     = (uintptr_t)dma_addr;
     sg->length   = length;
     sg->lkey     = ctx->mr->lkey;
 
@@ -559,24 +573,24 @@ struct ib_send_wr build_wr(rdma_ctx_t ctx, RDMA_OP op, void *addr, uint32_t remo
     return wr;
 }
 
-int post_write_wr(rdma_ctx_t ctx, void* local, uint32_t remote_offset, int length)
+int post_write_wr(rdma_ctx_t ctx, u64 local_addr, uint32_t remote_offset, int length)
 {
     int retval;
     struct ib_send_wr* bad_wr;
-    struct ib_send_wr wr = build_wr(ctx, RDMA_WRITE, local, remote_offset, length);
+    struct ib_send_wr wr = build_wr(ctx, RDMA_WRITE, local_addr, remote_offset, length);
 
     LOG_KERN(LOG_INFO, ("Posting send..\n"));
-    //retval = ib_post_send(ctx->qp, &wr, &bad_wr);
+    retval = ib_post_send(ctx->qp, &wr, &bad_wr);
     LOG_KERN(LOG_INFO, ("Send posted..\n"));
     
     return 0;
 }
 
-int post_read_wr(rdma_ctx_t ctx, void* local, uint32_t remote_offset, int length)
+int post_read_wr(rdma_ctx_t ctx, u64 local_addr, uint32_t remote_offset, int length)
 {
     int retval;
     struct ib_send_wr* bad_wr;
-    struct ib_send_wr wr = build_wr(ctx, RDMA_READ, local, remote_offset, length);
+    struct ib_send_wr wr = build_wr(ctx, RDMA_READ, local_addr, remote_offset, length);
 
     LOG_KERN(LOG_INFO, ("Posting read send..\n"));
     retval = ib_post_send(ctx->qp, &wr, &bad_wr);
@@ -585,18 +599,19 @@ int post_read_wr(rdma_ctx_t ctx, void* local, uint32_t remote_offset, int length
     return 0;
 }
 
-int rdma_op(rdma_ctx_t ctx, rdma_req_t req, int n_requests)
+int rdma_op(rdma_ctx_t ct, rdma_req_t req, int n_requests)
 {
     int i;
-    char req_signals[MAX_OUTSTANDING_REQUESTS] = {0};
+
+    volatile struct rdma_ctx* ctx = ct;
     ctx->outstanding_requests = n_requests;
 
     for (i = 0; i < n_requests; ++i) {
         LOG_KERN(LOG_INFO, ("Processing req %d", i));
         if (req[i].rw == RDMA_READ) {
-            post_read_wr(ctx, req[i].local, req[i].remote_offset, req[i].length);
+            post_read_wr((rdma_ctx_t)ctx, req[i].dma_addr, req[i].remote_offset, req[i].length);
         } else if (req[i].rw == RDMA_WRITE) {
-            post_write_wr(ctx, req[i].local, req[i].remote_offset, req[i].length);
+            post_write_wr((rdma_ctx_t)ctx, req[i].dma_addr, req[i].remote_offset, req[i].length);
         } else {
             LOG_KERN(LOG_INFO, ("Wrong op"));
             ctx->outstanding_requests = 0;
@@ -607,17 +622,11 @@ int rdma_op(rdma_ctx_t ctx, rdma_req_t req, int n_requests)
     LOG_KERN(LOG_INFO, ("Waiting for requests completion"));
     // wait until all requests are done
 
-    //while (ctx->outstanding_requests)
-    //    ;
+    while (ctx->outstanding_requests)
+        ;
+    
+    LOG_KERN(LOG_INFO, ("All requests done"));
 
-    return 0;
-    while (1) {
-        int count = 0, i = 0;
-        for (; i < n_requests; ++i)
-            count += (req_signals[i] != 0);
-        if (count == n_requests)
-            break;
-    }
     return 0;
 }
 

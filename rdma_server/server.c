@@ -27,8 +27,8 @@
    }\
 }
 
-#define SIZE 500
 #define MYPORT 18515
+
 time_t timer;
 int sockfd, new_fd; // listen on sock_fd, new connection on new_fd
 struct sockaddr_in my_addr; // my address information
@@ -59,9 +59,23 @@ struct context {
    uint32_t rem_rkey;
 
    char* rdma_buffer;
-   
+  
+   unsigned long rdma_mem_size; 
 } s_ctx;
 
+static 
+void handshake_get_memsize(void)
+{
+    char recv_buffer[1000];
+
+    int retval = recv(new_fd, recv_buffer, 1000, 0);
+    CHECK(retval > 0);
+    
+    sscanf(recv_buffer, "%lu", &s_ctx.rdma_mem_size);
+    CHECK_MSG(s_ctx.rdma_mem_size > 0, "Error: received wrong mem size");
+}
+
+static
 void exchange_bootstrap_data(void* virtual_address, uint32_t rkey, int qpn, int psn, int lid)
 {
     puts("exchange_bootstrap_data starting");
@@ -176,7 +190,7 @@ int setup_rdma_2()
 
    memset(&sg, 0, sizeof(sg));
    sg.addr	  = (uintptr_t)s_ctx.rdma_buffer;
-   sg.length = SIZE;
+   sg.length      = s_ctx.rdma_mem_size;
    sg.lkey	  = s_ctx.mr->lkey;
 
    memset(&wr, 0, sizeof(wr));
@@ -209,11 +223,13 @@ int setup_rdma_1()
    s_ctx.pd = ibv_alloc_pd(s_ctx.context);
    CHECK_MSG(s_ctx.pd != 0, "Error gettign pd");
 
-   s_ctx.rdma_buffer = (char*)malloc(SIZE);
+   s_ctx.rdma_buffer = (char*)malloc(s_ctx.rdma_mem_size);
    strcpy(s_ctx.rdma_buffer, "AHOY!");
    CHECK_MSG(s_ctx.rdma_buffer != 0, "Error getting buf");
-   s_ctx.mr = ibv_reg_mr(s_ctx.pd, s_ctx.rdma_buffer, SIZE, IBV_ACCESS_LOCAL_WRITE | 
-                            IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+   s_ctx.mr = ibv_reg_mr(s_ctx.pd, s_ctx.rdma_buffer, s_ctx.rdma_mem_size, 
+                            IBV_ACCESS_LOCAL_WRITE | 
+                            IBV_ACCESS_REMOTE_WRITE | 
+                            IBV_ACCESS_REMOTE_READ);
    CHECK_MSG(s_ctx.mr != NULL, "Error getting mr");
 
    printf("Created my. rkey: %u\n", s_ctx.mr->rkey);
@@ -298,10 +314,16 @@ int main(void)
     timer = time(NULL);
 
     wait_for_tcp_connection();
+    
+    puts("Handshaking. Getting mem_size");
+    handshake_get_memsize();
+
     setup_rdma_1();
     get_port_data();
+    
     puts("Handshaking");
     handshake();
+
     setup_rdma_2();
 
     CHECK(ibv_req_notify_cq(s_ctx.send_cq, 0) == 0);
