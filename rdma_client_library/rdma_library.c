@@ -567,7 +567,7 @@ struct ib_send_wr build_wr(rdma_ctx_t ctx, RDMA_OP op, u64 dma_addr, uint32_t re
     wr.num_sge    = 1;
     wr.opcode     = (op==RDMA_READ?IB_WR_RDMA_READ : IB_WR_RDMA_WRITE);
     wr.send_flags = IB_SEND_SIGNALED;
-    wr.wr.rdma.remote_addr = ctx->rem_vaddr;
+    wr.wr.rdma.remote_addr = ctx->rem_vaddr + remote_offset;
     wr.wr.rdma.rkey        = ctx->rem_rkey;
 
     return wr;
