@@ -1,6 +1,6 @@
 # In-kernel RDMA library
 
-This repo contains client/server code that uses RDMA to communicate.
+This repo contains client/server code that uses RDMA to communicate. The server runs in userspace, while the client runs as a kernel module.
 
 This code has been tested with the hardware/software configuration at the bottom.
 
