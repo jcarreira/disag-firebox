@@ -11,6 +11,9 @@ This code has been tested with the hardware/software configuration at the bottom
 
    To setup an RDMA QP we need to have some information about the remote node. In the beginning a TCP connection is established to communicate this.
 
+2. This doesn't work for me.
+
+   You can shoot an e-mail or open an issue. I will try to help.
 
 ##Hardware and Software configuration:
 
