@@ -21,3 +21,7 @@ RAM: 128GB ( 8 x 16gb ECC)
 NIC: 56Gbps InfiniBand Mellanox ConnectX-3 VPI MCX354A-FCBT FDR QSFP Dual Port PCI-E x8 8.0GT/s
 
 Switch: Mellanox MSX6036F-1SFS
+
+OS: Ubuntu 14.04.4 Linux 3.19.0-42
+
+OFED: Mellanox OFED 3.2
