@@ -596,7 +596,7 @@ int post_read_wr(rdma_ctx_t ctx, u64 local_addr, uint32_t remote_offset, int len
     struct ib_send_wr* bad_wr;
     struct ib_rdma_wr rdma_wr;
     memset(&rdma_wr, 0, sizeof(rdma_wr));
-    struct ib_send_wr wr = build_wr(ctx, RDMA_READ, local_addr, remote_offset, length);
+    rdma_wr.wr = build_wr(ctx, RDMA_READ, local_addr, remote_offset, length);
     rdma_wr.remote_addr = ctx->rem_vaddr + remote_offset;
     rdma_wr.rkey = ctx->rem_rkey;
 
