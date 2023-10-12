@@ -1,6 +1,6 @@
 obj-m += client.o
 #ccflags-y=-I/usr/include/
-ccflags-y=-I/usr/src/mlnx-ofed-kernel-3.2/include/ 
+ccflags-y=-I/usr/src/mlnx-ofed-kernel-5.4/include/ 
  
 .PHONY: load unload
 
