@@ -270,19 +270,18 @@ static void send_data(char* data, int size) {
 
     msg.msg_name     = 0;
     msg.msg_namelen  = 0;
-    msg.msg_iov      = &iov;
-    msg.msg_iovlen   = 1;
+    iov.iov_base = data;
+    iov.iov_len = size;
+    iov_iter_init(&msg.msg_iter, READ, &iov, 1, size);
     msg.msg_control  = NULL;
     msg.msg_controllen = 0;
     msg.msg_flags    = 0;
-    msg.msg_iov->iov_len = size;
-    msg.msg_iov->iov_base = data;
 
     printk(KERN_INFO "Sending data..\n");
     oldfs = get_fs();
     set_fs(KERNEL_DS);
 
-    retval = sock_sendmsg(sock, &msg, size);
+    retval = sock_sendmsg(sock, &msg);
 
     set_fs(oldfs);
 }
@@ -295,24 +294,23 @@ static void receive_data(char* data, int size) {
     
     printk(KERN_INFO "receive_data\n");
     
+    iov.iov_base = data;
+    iov.iov_len = size;
     msg.msg_name = 0;
     msg.msg_namelen = 0;
     //msg.msg_name = &servaddr;
     //msg.msg_namelen = sizeof(struct sockaddr_in);
-    msg.msg_iov = &iov;
-    msg.msg_iovlen = 1;
+    iov_iter_init(&msg.msg_iter, READ, &iov, 1, size);
     msg.msg_control = NULL;
     msg.msg_controllen = 0;
     msg.msg_flags = 0;
-    msg.msg_iov->iov_base= data;
-    msg.msg_iov->iov_len = size;
     
     printk(KERN_INFO "Receving data..\n");
 
     oldfs = get_fs();
     set_fs(KERNEL_DS);
 
-    retval = sock_recvmsg(sock, &msg, size, 0);
+    retval = sock_recvmsg(sock, &msg, 0);
 
     set_fs(oldfs);
 }
@@ -494,7 +492,7 @@ int is_second_device(void)
 int post_send_wr(void)
 {
     struct ib_sge sg;
-    struct ib_send_wr wr;
+    struct ib_rdma_wr rdma_wr;
     struct ib_send_wr *bad_wr;
     LOG_KERN(LOG_INFO, ("Setting sg..\n"));
 #define DO_RDMA_READ
@@ -505,14 +503,14 @@ int post_send_wr(void)
     sg.lkey     = s_ctx.mr->lkey;
 
     LOG_KERN(LOG_INFO, ("Working on IB_WR_RDMA_READ wr..\n"));
-    memset(&wr, 0, sizeof(wr));
-    wr.wr_id      = (uintptr_t)&s_ctx;//0;
-    wr.sg_list    = &sg;
-    wr.num_sge    = 1;
-    wr.opcode     = IB_WR_RDMA_READ;
-    wr.send_flags = IB_SEND_SIGNALED; //0
-    wr.wr.rdma.remote_addr = s_ctx.rem_vaddr;
-    wr.wr.rdma.rkey        = s_ctx.rem_rkey;
+    memset(&rdma_wr, 0, sizeof(rdma_wr));
+    rdma_wr.wr.wr_id      = (uintptr_t)&s_ctx;//0;
+    rdma_wr.wr.sg_list    = &sg;
+    rdma_wr.wr.num_sge    = 1;
+    rdma_wr.wr.opcode     = IB_WR_RDMA_READ;
+    rdma_wr.wr.send_flags = IB_SEND_SIGNALED; //0
+    rdma_wr.remote_addr = s_ctx.rem_vaddr;
+    rdma_wr.rkey        = s_ctx.rem_rkey;
 #else
     memset(&sg, 0, sizeof(sg));
     sg.addr  = (uintptr_t)s_ctx.dma_addr;//rdma_recv_buffer;
@@ -520,16 +518,16 @@ int post_send_wr(void)
     sg.lkey  = s_ctx.mr->lkey;
 
     LOG_KERN(LOG_INFO, "Working on IB_WR_SEND wr..\n");
-    memset(&wr, 0, sizeof(wr));
-    wr.wr_id      = (uintptr_t)&s_ctx;
-    wr.sg_list    = &sg;
-    wr.num_sge    = 1;
-    wr.opcode     = IB_WR_SEND;
-    wr.send_flags = IB_SEND_SIGNALED;
+    memset(&rdma_wr, 0, sizeof(rdma_wr));
+    rdma_wr.wr.wr_id      = (uintptr_t)&s_ctx;
+    rdma_wr.wr.sg_list    = &sg;
+    rdma_wr.wr.num_sge    = 1;
+    rdma_wr.wr.opcode     = IB_WR_SEND;
+    rdma_wr.wr.send_flags = IB_SEND_SIGNALED;
 #endif
 
     LOG_KERN(LOG_INFO, ("Posting send..\n"));
-    if (ib_post_send(s_ctx.qp, &wr, &bad_wr)) {
+    if (ib_post_send(s_ctx.qp, &rdma_wr.wr, &bad_wr)) {
 	    printk(KERN_INFO "Error posting send..\n");
 	    return -1;
     }
@@ -563,9 +561,12 @@ void add_device(struct ib_device* dev)
     s_ctx.pd = ib_alloc_pd(dev);
     CHECK_MSG2(s_ctx.pd != 0, "Error creating pd");
 
-    // create completion queues
-    s_ctx.send_cq = ib_create_cq(dev, comp_handler_send, cq_event_handler_send, NULL, 10, 0);
-    s_ctx.recv_cq = ib_create_cq(dev, comp_handler_recv, cq_event_handler_recv, NULL, 10, 0);
+    // create a attribute structure and pass the same to create cq
+    struct ib_cq_init_attr cq_attr = {};
+    cq_attr.cqe = 10;
+    
+    s_ctx.send_cq = ib_create_cq(dev, comp_handler_send, cq_event_handler_send, NULL, &cq_attr);
+    s_ctx.recv_cq = ib_create_cq(dev, comp_handler_recv, cq_event_handler_recv, NULL, &cq_attr);
     CHECK_MSG2(s_ctx.send_cq != 0, "Error creating CQ");
     CHECK_MSG2(s_ctx.recv_cq != 0, "Error creating CQ");
 

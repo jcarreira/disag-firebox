@@ -4,6 +4,8 @@ This repo contains client/server code that uses RDMA to communicate. The server 
 
 This code has been tested with the hardware/software configuration at the bottom.
 
+Note: 
+Modified to work with newer kernel versions. 
 
 ##FAQ
 

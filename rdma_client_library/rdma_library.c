@@ -227,20 +227,19 @@ static int receive_data(rdma_ctx_t ctx, char* data, int size) {
     
     msg.msg_name = 0;
     msg.msg_namelen = 0;
-    msg.msg_iov = &iov;
-    msg.msg_iovlen = 1;
+    iov.iov_base = data;
+    iov.iov_len = size;
+    iov_iter_init(&msg.msg_iter, READ, &iov, 1, size);
     msg.msg_control = NULL;
     msg.msg_controllen = 0;
     msg.msg_flags = 0;
-    msg.msg_iov->iov_base= data;
-    msg.msg_iov->iov_len = size;
     
     LOG_KERN(LOG_INFO, ("Receving data..\n"));
 
     oldfs = get_fs();
     set_fs(KERNEL_DS);
 
-    retval = sock_recvmsg(ctx->sock, &msg, size, 0);
+    retval = sock_recvmsg(ctx->sock, &msg, 0);
 
     set_fs(oldfs);
 
@@ -255,21 +254,20 @@ static int send_data(rdma_ctx_t ctx, char* data, int size) {
     
     printk(KERN_INFO "Exchanging data\n");
 
+    iov.iov_base = data;
+    iov.iov_len = size;
     msg.msg_name     = 0;
     msg.msg_namelen  = 0;
-    msg.msg_iov      = &iov;
-    msg.msg_iovlen   = 1;
+    iov_iter_init(&msg.msg_iter, READ, &iov, 1, size);
     msg.msg_control  = NULL;
     msg.msg_controllen = 0;
     msg.msg_flags    = 0;
-    msg.msg_iov->iov_len = size;
-    msg.msg_iov->iov_base = data;
 
     printk(KERN_INFO "Sending data..\n");
     oldfs = get_fs();
     set_fs(KERNEL_DS);
 
-    retval = sock_sendmsg(ctx->sock, &msg, size);
+    retval = sock_sendmsg(ctx->sock, &msg);
 
     set_fs(oldfs);
 
@@ -485,12 +483,16 @@ rdma_ctx_t rdma_init(int npages, char* ip_addr, int port)
 
     ctx->pd = ib_alloc_pd(rdma_ib_device.dev);
     CHECK_MSG_RET(ctx->pd != 0, "Error creating pd", 0);
-   
+    
+    // create a attribute structure and pass the same to create cq
+    struct ib_cq_init_attr cq_attr = {};
+    cq_attr.cqe = 10;
+    
     // Note that we set the CQ context to our ctx structure 
     ctx->send_cq = ib_create_cq(rdma_ib_device.dev, 
-            comp_handler_send, cq_event_handler_send, ctx, 10, 0);
+            comp_handler_send, cq_event_handler_send, ctx, &cq_attr);
     ctx->recv_cq = ib_create_cq(rdma_ib_device.dev, 
-            comp_handler_recv, cq_event_handler_recv, ctx, 10, 0);
+            comp_handler_recv, cq_event_handler_recv, ctx, &cq_attr);
     CHECK_MSG_RET(ctx->send_cq != 0, "Error creating CQ", 0);
     CHECK_MSG_RET(ctx->recv_cq != 0, "Error creating CQ", 0);
     
@@ -567,8 +569,6 @@ struct ib_send_wr build_wr(rdma_ctx_t ctx, RDMA_OP op, u64 dma_addr, uint32_t re
     wr.num_sge    = 1;
     wr.opcode     = (op==RDMA_READ?IB_WR_RDMA_READ : IB_WR_RDMA_WRITE);
     wr.send_flags = IB_SEND_SIGNALED;
-    wr.wr.rdma.remote_addr = ctx->rem_vaddr + remote_offset;
-    wr.wr.rdma.rkey        = ctx->rem_rkey;
 
     return wr;
 }
@@ -577,10 +577,14 @@ int post_write_wr(rdma_ctx_t ctx, u64 local_addr, uint32_t remote_offset, int le
 {
     int retval;
     struct ib_send_wr* bad_wr;
-    struct ib_send_wr wr = build_wr(ctx, RDMA_WRITE, local_addr, remote_offset, length);
+    struct ib_rdma_wr rdma_wr;
+    memset(&rdma_wr, 0, sizeof(rdma_wr));
+    rdma_wr.wr = build_wr(ctx, RDMA_WRITE, local_addr, remote_offset, length);
+    rdma_wr.remote_addr = ctx->rem_vaddr + remote_offset;
+    rdma_wr.rkey = ctx->rem_rkey;
 
     LOG_KERN(LOG_INFO, ("Posting send..\n"));
-    retval = ib_post_send(ctx->qp, &wr, &bad_wr);
+    retval = ib_post_send(ctx->qp, &rdma_wr.wr, &bad_wr);
     LOG_KERN(LOG_INFO, ("Send posted..\n"));
     
     return 0;
@@ -590,10 +594,14 @@ int post_read_wr(rdma_ctx_t ctx, u64 local_addr, uint32_t remote_offset, int len
 {
     int retval;
     struct ib_send_wr* bad_wr;
+    struct ib_rdma_wr rdma_wr;
+    memset(&rdma_wr, 0, sizeof(rdma_wr));
     struct ib_send_wr wr = build_wr(ctx, RDMA_READ, local_addr, remote_offset, length);
+    rdma_wr.remote_addr = ctx->rem_vaddr + remote_offset;
+    rdma_wr.rkey = ctx->rem_rkey;
 
     LOG_KERN(LOG_INFO, ("Posting read send..\n"));
-    retval = ib_post_send(ctx->qp, &wr, &bad_wr);
+    retval = ib_post_send(ctx->qp, &rdma_wr.wr, &bad_wr);
     LOG_KERN(LOG_INFO, ("Send posted..\n"));
     
     return 0;
