@@ -48,6 +48,10 @@ struct context {
    int active_mtu;   
    uint32_t local_rkey;  // rkey to be sent to client
    union ibv_gid gid;
+
+   // destination gid for roce
+   union ibv_gid rem_gid;
+
    int qpn;
    int psn;
    int lid;
@@ -75,8 +79,42 @@ void handshake_get_memsize(void)
     CHECK_MSG(s_ctx.rdma_mem_size > 0, "Error: received wrong mem size");
 }
 
+// void wire_gid_to_gid(const char *wgid, union ibv_gid *gid)
+// {
+// 	char tmp[9];
+// 	__be32 v32;
+// 	int i;
+// 	uint32_t tmp_gid[4];
+
+// 	for (tmp[8] = 0, i = 0; i < 4; ++i) {
+// 		memcpy(tmp, wgid + i * 8, 8);
+// 		sscanf(tmp, "%x", &v32);
+// 		tmp_gid[i] = be32toh(v32);
+// 	}
+// 	memcpy(gid, tmp_gid, sizeof(*gid));
+// }
+
+// void gid_to_wire_gid(const union ibv_gid *gid, char wgid[])
+// {
+// 	uint32_t tmp_gid[4];
+// 	int i;
+
+// 	memcpy(tmp_gid, gid, sizeof(tmp_gid));
+// 	for (i = 0; i < 4; ++i)
+// 		sprintf(&wgid[i * 8], "%08x", htobe32(tmp_gid[i]));
+// }
+
+void 
+print_raw_bytes(const void* data, size_t size) {
+    const unsigned char* bytes = (const unsigned char*)data;
+    for (size_t i = 0; i < size; ++i) {
+        printf("%02X ", bytes[i]);
+    }
+    printf("\n");
+}
+
 static
-void exchange_bootstrap_data(void* virtual_address, uint32_t rkey, int qpn, int psn, int lid)
+void exchange_bootstrap_data(union ibv_gid* gid, union ibv_gid* rem_gid, void* virtual_address, uint32_t rkey, int qpn, int psn, int lid)
 {
     puts("exchange_bootstrap_data starting");
     // The server needs to send the rkey
@@ -102,6 +140,15 @@ void exchange_bootstrap_data(void* virtual_address, uint32_t rkey, int qpn, int 
 
     sscanf(recv_buffer, "%016Lx:%u:%x:%x:%x", &s_ctx.rem_vaddr, 
            &s_ctx.rem_rkey, &s_ctx.rem_qpn, &s_ctx.rem_psn, &s_ctx.rem_lid);
+    
+    uint8_t raw_rem_gid[16] = {0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9a, 0xf2, 0xb3, 0xff, 0xfe, 0xcc, 0x12, 0xe0};
+    memcpy(s_ctx.rem_gid.raw, raw_rem_gid, sizeof(raw_rem_gid));
+
+    // char gid_str[33];
+    // char rem_gid_str[33];
+    // inet_ntop(AF_INET6, &s_ctx.gid, gid_str, sizeof gid_str);
+    // inet_ntop(AF_INET6, &s_ctx.rem_gid, rem_gid_str, sizeof rem_gid_str);
+    // printf("Local GID: %s, Remote GID: %s\n", gid_str, rem_gid_str);
 }
 
 int get_port_data()
@@ -109,7 +156,7 @@ int get_port_data()
     struct ibv_port_attr attr;
     int retval = ibv_query_port(s_ctx.context,1,&attr);
     CHECK(retval == 0);
-    CHECK_MSG(attr.active_mtu == 5, "!!!!!!!!Wrong device!!!!!!");
+    //CHECK_MSG(attr.active_mtu == 5, "!!!!!!!!Wrong device!!!!!!");
 
     s_ctx.lid = attr.lid;
     s_ctx.qpn = s_ctx.qp->qp_num;
@@ -122,13 +169,14 @@ int get_port_data()
     s_ctx.active_mtu = attr.active_mtu;
 
     ibv_query_gid(s_ctx.context, 1, 0, &s_ctx.gid);
+    print_raw_bytes((void*)&s_ctx.gid, sizeof(union ibv_gid));
 
     return 0;
 }
 
 void handshake()
 {
-    exchange_bootstrap_data(s_ctx.rdma_buffer, s_ctx.local_rkey, s_ctx.qpn, s_ctx.psn, s_ctx.lid);
+    exchange_bootstrap_data(&s_ctx.gid, &s_ctx.rem_gid, s_ctx.rdma_buffer, s_ctx.local_rkey, s_ctx.qpn, s_ctx.psn, s_ctx.lid);
 }
 
 int setup_rdma_2()
@@ -145,11 +193,17 @@ int setup_rdma_2()
    attr.rq_psn	    = s_ctx.rem_psn;
    attr.max_dest_rd_atomic = 1;
    attr.min_rnr_timer = 12;
-   attr.ah_attr.is_global = 0;
+   attr.ah_attr.is_global = 1;          // roce
    attr.ah_attr.dlid = s_ctx.rem_lid;
    attr.ah_attr.sl = 0;
    attr.ah_attr.src_path_bits = 0;
    attr.ah_attr.port_num = 1;
+   attr.ah_attr.static_rate = 10;
+   memcpy(&attr.ah_attr.grh.dgid, &s_ctx.rem_gid, sizeof(union ibv_gid));
+   attr.ah_attr.grh.flow_label = 0;
+   attr.ah_attr.grh.hop_limit = 1;
+   attr.ah_attr.grh.sgid_index = 0;     
+   attr.ah_attr.grh.traffic_class = 0;
 
    CHECK(ibv_modify_qp(s_ctx.qp, &attr,
 			   IBV_QP_STATE              |
@@ -215,6 +269,7 @@ int setup_rdma_1()
    dev_list = ibv_get_device_list(&num_devices);
 
    ibv_dev = dev_list[0];
+   printf("Device name: %s\n", ibv_dev->name);
    CHECK_MSG(ibv_dev != NULL, "Error getting device");
 
    s_ctx.context = ibv_open_device(ibv_dev);

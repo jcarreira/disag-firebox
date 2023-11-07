@@ -35,7 +35,7 @@ static int __init main_module_init(void)
     while(!rdma_library_ready())
         ;
 
-    ctx = rdma_init(100, "127.0.0.1", 18515);
+    ctx = rdma_init(100, "10.10.1.1", 18515);
 
     if (ctx != NULL) {
         LOG_KERN(LOG_INFO, ("RDMA_INIT SUCCESS"));

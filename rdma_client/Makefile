@@ -1,6 +1,10 @@
+OFA_DIR = /usr/src/ofa_kernel/default
+OFA_INCLUDE := $(OFA_DIR)/include
+OFA_SYMVERS := $(OFA_DIR)/Module.symvers
+
 obj-m += client.o
 #ccflags-y=-I/usr/include/
-ccflags-y=-I/usr/src/mlnx-ofed-kernel-5.4/include/ 
+ccflags-y=-I$(OFA_INCLUDE)
  
 .PHONY: load unload
 

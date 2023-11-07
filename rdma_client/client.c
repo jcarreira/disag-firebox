@@ -558,15 +558,15 @@ void add_device(struct ib_device* dev)
     INIT_IB_EVENT_HANDLER(&ieh, dev, async_event_handler);
     ib_register_event_handler(&ieh);
 
-    s_ctx.pd = ib_alloc_pd(dev);
+    s_ctx.pd = __ib_alloc_pd(dev, 0, KBUILD_MODNAME);
     CHECK_MSG2(s_ctx.pd != 0, "Error creating pd");
 
     // create a attribute structure and pass the same to create cq
     struct ib_cq_init_attr cq_attr = {};
     cq_attr.cqe = 10;
     
-    s_ctx.send_cq = ib_create_cq(dev, comp_handler_send, cq_event_handler_send, NULL, &cq_attr);
-    s_ctx.recv_cq = ib_create_cq(dev, comp_handler_recv, cq_event_handler_recv, NULL, &cq_attr);
+    s_ctx.send_cq = __ib_create_cq(dev, comp_handler_send, cq_event_handler_send, NULL, &cq_attr, KBUILD_MODNAME);
+    s_ctx.recv_cq = __ib_create_cq(dev, comp_handler_recv, cq_event_handler_recv, NULL, &cq_attr, KBUILD_MODNAME);
     CHECK_MSG2(s_ctx.send_cq != 0, "Error creating CQ");
     CHECK_MSG2(s_ctx.recv_cq != 0, "Error creating CQ");
 

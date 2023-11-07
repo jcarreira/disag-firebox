@@ -2,8 +2,7 @@
 #include "log.h"
 
 #include <linux/kernel.h>
-#include <rdma/ib_verbs.h>
-#include <rdma/rdma_cm.h>
+#include <linux/string.h>
 
 #define RDMA_BUFFER_SIZE (1024*1024)
 
@@ -47,6 +46,9 @@ struct rdma_ctx {
     uint32_t rem_rkey;
 
     volatile unsigned long outstanding_requests;
+
+    // destination gid for roce
+    union ib_gid rem_gid;
 };
 
 struct rdma_req_t {
@@ -55,6 +57,41 @@ struct rdma_req_t {
     int length;
     bool rw;
 };
+
+// void wire_gid_to_gid(const char *wgid, union ib_gid *gid)
+// {
+// 	char tmp[9];
+// 	__be32 v32;
+// 	int i;
+// 	uint32_t tmp_gid[4];
+
+// 	for (tmp[8] = 0, i = 0; i < 4; ++i) {
+// 		memcpy(tmp, wgid + i * 8, 8);
+// 		sscanf(tmp, "%x", &v32);
+// 		tmp_gid[i] = be32toh(v32);
+// 	}
+// 	memcpy(gid, tmp_gid, sizeof(*gid));
+// }
+
+// void gid_to_wire_gid(const union ib_gid *gid, char wgid[])
+// {
+// 	uint32_t tmp_gid[4];
+// 	int i;
+
+// 	memcpy(tmp_gid, gid, sizeof(tmp_gid));
+// 	for (i = 0; i < 4; ++i)
+// 		sprintf(&wgid[i * 8], "%08x", htobe32(tmp_gid[i]));
+// }
+
+void 
+print_raw_bytes(const void* data, size_t size) {
+    const unsigned char* bytes = (const unsigned char*)data;
+    size_t i;
+    for (i = 0; i < size; ++i) {
+        printk(KERN_WARNING "%02X ", bytes[i]);
+    }
+    printk(KERN_WARNING "\n");
+}
 
 static struct ib_device_singleton {
     struct ib_device_attr mlnx_device_attr;
@@ -78,15 +115,15 @@ static void async_event_handler(struct ib_event_handler* ieh, struct ib_event *i
 static int populate_port_data(rdma_ctx_t ctx)
 {
     int retval;
-    
+
     //LOG_KERN(LOG_INFO, ("Get port data\n"));
     retval = ib_query_port(rdma_ib_device.dev, 1, &rdma_ib_device.attr);
     CHECK_MSG_RET(retval == 0, "Error querying port", -1);
-    CHECK_MSG_RET(rdma_ib_device.attr.active_mtu == 5, "Error: Wrong device", -1);
+    // CHECK_MSG_RET(rdma_ib_device.attr.active_mtu == 5, "Error: Wrong device", -1);
 
     rdma_ib_device.lid = rdma_ib_device.attr.lid;
-    ib_query_gid(rdma_ib_device.dev, 1, 0, &rdma_ib_device.gid, &rdma_ib_device.gid_attr);
-
+    uint8_t raw_gid[16] = {0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9a, 0xf2, 0xb3, 0xff, 0xfe, 0xcc, 0x12, 0xe0};
+    memcpy(rdma_ib_device.gid.raw, raw_gid, sizeof(raw_gid));
     return 0;
 } 
 
@@ -94,16 +131,19 @@ static void add_device(struct ib_device* dev)
 {
     // first check this is the mellanox device
     int retval = ib_query_port(dev, 1, &rdma_ib_device.attr);
+    struct ib_udata uhw = {.outlen = 0, .inlen = 0};
+
     CHECK_MSG_NO_RET(retval == 0, "Error querying port");
 
-    if(rdma_ib_device.attr.active_mtu == 5) {
-        rdma_ib_device.dev = dev;
-    } else {
-        return;
-    }
+    rdma_ib_device.dev = dev;
+    // if(rdma_ib_device.attr.active_mtu == 5) {
+    //     rdma_ib_device.dev = dev;
+    // } else {
+    //     return;
+    // }
 
     // get device attributes
-    ib_query_device(dev, &rdma_ib_device.mlnx_device_attr); 
+    dev->ops.query_device(dev, &rdma_ib_device.mlnx_device_attr, &uhw); 
 
     // register handler
     INIT_IB_EVENT_HANDLER(&rdma_ib_device.ieh, dev, async_event_handler);
@@ -279,7 +319,8 @@ static int handshake(rdma_ctx_t ctx)
     int retval;
     char data[500];
     unsigned long long int vaddr = 0;
-    
+    char marshalled_gid[sizeof(union ib_gid)];
+    char marshalled_rem_gid[sizeof(union ib_gid)];
 
     // first send mem size
     sprintf(data, "%lu", ctx->rem_mem_size);
@@ -301,6 +342,8 @@ static int handshake(rdma_ctx_t ctx)
     // send handshake data to server
     send_data(ctx, data, strlen(data));
 
+    uint8_t rem_gid_raw[16] = {0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9a, 0xf2, 0xb3, 0xff, 0xfe, 0xc8, 0xa9, 0xb4};
+    memcpy(ctx->rem_gid.raw, rem_gid_raw, sizeof(rem_gid_raw));
     return 0;
 }
 
@@ -335,10 +378,17 @@ static int modify_qp(rdma_ctx_t ctx)
     attr.rq_psn = ctx->rem_psn;
     attr.max_dest_rd_atomic = 1;
     attr.min_rnr_timer = 12;
-    attr.ah_attr.dlid = ctx->rem_lid;
-    attr.ah_attr.sl = 0; // service level
-    attr.ah_attr.src_path_bits = 0;
-    attr.ah_attr.port_num = 1;
+    struct rdma_ah_attr* ah_attr = &attr.ah_attr;
+    ah_attr->type = RDMA_AH_ATTR_TYPE_ROCE;
+    rdma_ah_set_grh(ah_attr, NULL, 0, 0, 1, 0);
+    rdma_ah_set_dgid_raw(ah_attr, &ctx->rem_gid);
+    rdma_ah_set_sl(ah_attr, 0);
+    rdma_ah_set_port_num(ah_attr, 1);    
+    rdma_ah_set_dlid(ah_attr, ctx->rem_lid);
+    rdma_ah_set_path_bits(ah_attr, 0);
+    rdma_ah_set_static_rate(ah_attr, 10);
+    //u8 mac[ETH_ALEN] = {0x9c, 0xdc, 0x71, 0x56, 0xfd, 0xa5};
+    //memcpy(ah_attr->roce.dmac, mac, ETH_ALEN);
    
     LOG_KERN(LOG_INFO, ("Going to RTR..\n"));
     retval = ib_modify_qp(ctx->qp, &attr,
@@ -431,6 +481,7 @@ static void comp_handler_send(struct ib_cq* cq, void* cq_context)
                 ctx->outstanding_requests--;
             } else {
                 LOG_KERN(LOG_INFO, ("FAILURE %d\n", wc.status));
+                return;
             }
         }
     } while (ib_req_notify_cq(cq, IB_CQ_NEXT_COMP |
@@ -477,11 +528,11 @@ rdma_ctx_t rdma_init(int npages, char* ip_addr, int port)
     memset(ctx, 0, sizeof(struct rdma_ctx));
     ctx->rem_mem_size = npages * (1024 * 4);
 
-    if (!rdma_ib_device.ib_device_initialized) {
+    if (!rdma_ib_device.ready_to_use) {
         LOG_KERN(LOG_INFO, ("ERROR"));
     }
 
-    ctx->pd = ib_alloc_pd(rdma_ib_device.dev);
+    ctx->pd = ib_alloc_pd(rdma_ib_device.dev, 0);
     CHECK_MSG_RET(ctx->pd != 0, "Error creating pd", 0);
     
     // create a attribute structure and pass the same to create cq
